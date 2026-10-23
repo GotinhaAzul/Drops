@@ -6,6 +6,10 @@
 //! window. It never focuses, raises, injects input, reads the clipboard, or
 //! changes desktop configuration.
 //!
+//! [`full_text`] is the on-demand counterpart used by the agent's
+//! `window_content` tool: it runs the same text helper with larger character,
+//! node, depth and time budgets, and never takes a screenshot.
+//!
 //! Every failure is reported as a warning on `context["content"]` instead of
 //! failing the chat. Subprocesses are bounded by `CaptureConfig::timeout_ms`,
 //! killed on timeout/cancellation, and their stdout is capped so a misbehaving
@@ -50,9 +54,18 @@ const TEXT_HELPER_SOURCE: &str = include_str!("../../../scripts/capture_text.py"
 const DEFAULT_TIMEOUT_MS: u64 = 2_500;
 const MAX_TIMEOUT_MS: u64 = 60_000;
 const MAX_TEXT_CHARS: usize = 1_000_000;
+const DEFAULT_FULL_TEXT_CHARS: usize = 500_000;
+const MAX_FULL_TEXT_CHARS: usize = MAX_TEXT_CHARS;
+const DEFAULT_FULL_NODES: usize = 50_000;
+const MAX_FULL_NODES: usize = 200_000;
+const DEFAULT_FULL_DEPTH: usize = 120;
+const MAX_FULL_DEPTH: usize = 512;
+const DEFAULT_FULL_BUDGET_MS: u64 = 8_000;
+const DEFAULT_FULL_TIMEOUT_MS: u64 = 12_000;
 const DEFAULT_IMAGE_EDGE: u32 = 1_280;
 const MAX_IMAGE_EDGE: u32 = 8_192;
 const MAX_TEXT_HELPER_BYTES: usize = 2 * 1024 * 1024;
+const MAX_FULL_HELPER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OCR_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCREENSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ENCODED_IMAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -88,6 +101,21 @@ pub struct CaptureConfig {
     pub max_image_edge: u32,
     /// Per-command timeout. Timeouts become warnings, never chat failures.
     pub timeout_ms: u64,
+    /// Capture fuller text on demand for the agent's `window_content` tool.
+    ///
+    /// The request context still receives only the `max_text_chars` preview.
+    /// This larger capture runs only when the agent asks for it.
+    pub full_text: bool,
+    /// Character cap for one on-demand full text capture.
+    pub full_max_text_chars: usize,
+    /// Accessibility node cap for one on-demand capture.
+    pub full_max_nodes: usize,
+    /// Accessibility depth cap for one on-demand capture.
+    pub full_max_depth: usize,
+    /// Accessibility/tmux time budget for one on-demand capture.
+    pub full_budget_ms: u64,
+    /// Hard subprocess timeout for one on-demand capture.
+    pub full_timeout_ms: u64,
 }
 
 impl Default for CaptureConfig {
@@ -101,6 +129,12 @@ impl Default for CaptureConfig {
             max_text_chars: 24_000,
             max_image_edge: DEFAULT_IMAGE_EDGE,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            full_text: true,
+            full_max_text_chars: DEFAULT_FULL_TEXT_CHARS,
+            full_max_nodes: DEFAULT_FULL_NODES,
+            full_max_depth: DEFAULT_FULL_DEPTH,
+            full_budget_ms: DEFAULT_FULL_BUDGET_MS,
+            full_timeout_ms: DEFAULT_FULL_TIMEOUT_MS,
         }
     }
 }
@@ -129,6 +163,56 @@ impl CaptureConfig {
 
     fn text_helper_enabled(&self) -> bool {
         self.accessibility || self.terminal
+    }
+
+    fn full_text_limit(&self) -> usize {
+        if self.full_max_text_chars == 0 {
+            DEFAULT_FULL_TEXT_CHARS
+        } else {
+            self.full_max_text_chars.min(MAX_FULL_TEXT_CHARS)
+        }
+    }
+
+    fn full_node_limit(&self) -> usize {
+        if self.full_max_nodes == 0 {
+            DEFAULT_FULL_NODES
+        } else {
+            self.full_max_nodes.min(MAX_FULL_NODES)
+        }
+    }
+
+    fn full_depth_limit(&self) -> usize {
+        if self.full_max_depth == 0 {
+            DEFAULT_FULL_DEPTH
+        } else {
+            self.full_max_depth.min(MAX_FULL_DEPTH)
+        }
+    }
+
+    fn full_budget(&self) -> Duration {
+        let ms = if self.full_budget_ms == 0 {
+            DEFAULT_FULL_BUDGET_MS
+        } else {
+            self.full_budget_ms.clamp(100, MAX_TIMEOUT_MS)
+        };
+        Duration::from_millis(ms)
+    }
+
+    fn full_timeout(&self) -> Duration {
+        let configured = if self.full_timeout_ms == 0 {
+            DEFAULT_FULL_TIMEOUT_MS
+        } else {
+            self.full_timeout_ms.min(MAX_TIMEOUT_MS)
+        };
+        // A hard timeout below the helper's own budget would guarantee a
+        // truncated capture, so keep at least one second of headroom.
+        let with_headroom = configured.max(
+            self.full_budget()
+                .as_millis()
+                .saturating_add(1_000)
+                .min(u128::from(MAX_TIMEOUT_MS)) as u64,
+        );
+        Duration::from_millis(with_headroom)
     }
 }
 
@@ -243,7 +327,17 @@ pub async fn enrich(
 
     let helper_future = async {
         match helper_input {
-            Some(input) => capture_text(&input, config, &cancel).await,
+            Some(input) => {
+                capture_text(
+                    &input,
+                    config,
+                    &cancel,
+                    config.text_limit(),
+                    config.timeout(),
+                    MAX_TEXT_HELPER_BYTES,
+                )
+                .await
+            }
             None => TextCapture::default(),
         }
     };
@@ -404,6 +498,150 @@ pub async fn enrich(
         content_value(status, sources, text, warnings, image),
     );
     Ok(())
+}
+
+/// Text captured on demand for the agent's `window_content` tool.
+#[derive(Debug, Clone)]
+pub struct FullText {
+    /// Concatenated text from the anchored window's sources.
+    pub text: String,
+    pub chars: usize,
+    /// True when a source or the combined text hit `full_max_text_chars`.
+    pub truncated: bool,
+    /// Per-source provenance (kind, scope, chars, truncated).
+    pub sources: Vec<Value>,
+    pub warnings: Vec<String>,
+}
+
+/// Capture the fuller text of the anchored window for on-demand tool access.
+///
+/// The regular [`enrich`] path sends a bounded preview with every request. This
+/// function is called only when the agent asks for more, so it can afford a
+/// larger character/node budget. It reads accessibility text and terminal
+/// scrollback exactly like the preview helper; it never takes a screenshot,
+/// focuses the window, or touches the clipboard. Callers should cache the
+/// result for the current anchored window and fold failures into a tool error.
+pub async fn full_text(
+    context: &Value,
+    config: &CaptureConfig,
+    cancel: CancellationToken,
+) -> Result<FullText> {
+    if context.get("kind").and_then(Value::as_str) != Some("window") {
+        anyhow::bail!("full window content is available only for window anchors");
+    }
+    if !config.enabled {
+        anyhow::bail!("window content capture is disabled in the Drops settings");
+    }
+    if !config.full_text {
+        anyhow::bail!("full window content capture is disabled in the Drops settings");
+    }
+    if WindowTarget::from_context(context).is_none() {
+        anyhow::bail!("the context has no usable anchored window address");
+    }
+    if cancel.is_cancelled() {
+        anyhow::bail!("full content capture was cancelled");
+    }
+
+    // Always check the compositor lock before reading accessibility. A stale
+    // unlocked context must not let the helper read beneath a lock surface.
+    let context_locked = context
+        .get("screen_locked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let snapshot_result = fresh_snapshot(config, &cancel).await.map(Some);
+    if let Some(detail) = lock_refusal(context_locked, &snapshot_result) {
+        anyhow::bail!(
+            "{}; refusing to read the window while the desktop is locked",
+            detail
+        );
+    }
+
+    let limit = config.full_text_limit();
+    let mut input = context.clone();
+    if let Some(map) = input.as_object_mut() {
+        map.remove("content");
+        map.insert("capture_options".to_string(), full_capture_options(config));
+    }
+    let input = serde_json::to_vec(&input)?;
+
+    let capture = capture_text(
+        &input,
+        config,
+        &cancel,
+        limit,
+        config.full_timeout(),
+        MAX_FULL_HELPER_BYTES,
+    )
+    .await;
+    if capture.cancelled {
+        anyhow::bail!("full content capture was cancelled");
+    }
+
+    let mut warnings = capture.warnings;
+    let mut text = String::new();
+    let mut sources = Vec::new();
+    let mut truncated = false;
+    for source in &capture.sources {
+        let sanitized = sanitize_text(&source.text);
+        if sanitized.trim().is_empty() {
+            continue;
+        }
+
+        let separator = if text.is_empty() { 0 } else { 2 };
+        let remaining = limit.saturating_sub(text.chars().count() + separator);
+        if remaining == 0 {
+            truncated = true;
+            sources.push(source_meta(&source.kind, &source.scope, 0, true));
+            continue;
+        }
+
+        let (chunk, cut) = clamp_chars(&sanitized, remaining);
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        let chars = chunk.chars().count();
+        text.push_str(&chunk);
+        let source_truncated = source.truncated || cut;
+        truncated |= source_truncated;
+        sources.push(source_meta(
+            &source.kind,
+            &source.scope,
+            chars,
+            source_truncated,
+        ));
+    }
+
+    if text.trim().is_empty() {
+        warnings.push(warning(
+            "full_content_unavailable",
+            "no additional accessibility or terminal text was available for the anchored window",
+        ));
+    }
+    if truncated {
+        warnings.push(warning(
+            "full_text_truncated",
+            format!("full window content was limited to {limit} characters"),
+        ));
+    }
+
+    Ok(FullText {
+        chars: text.chars().count(),
+        text,
+        truncated,
+        sources,
+        warnings,
+    })
+}
+
+fn full_capture_options(config: &CaptureConfig) -> Value {
+    json!({
+        "accessibility": config.accessibility,
+        "terminal": config.terminal,
+        "max_text_chars": config.full_text_limit(),
+        "max_nodes": config.full_node_limit(),
+        "max_depth": config.full_depth_limit(),
+        "budget_ms": config.full_budget().as_millis() as u64,
+    })
 }
 
 fn set_content(context: &mut Value, content: Value) {
@@ -824,6 +1062,9 @@ async fn capture_text(
     input: &[u8],
     config: &CaptureConfig,
     cancel: &CancellationToken,
+    limit: usize,
+    timeout: Duration,
+    stdout_limit: usize,
 ) -> TextCapture {
     let mut stdin = input.to_vec();
     stdin.push(b'\n');
@@ -834,14 +1075,7 @@ async fn capture_text(
         .arg("-c")
         .arg(TEXT_HELPER_SOURCE)
         .env("PYTHONDONTWRITEBYTECODE", "1");
-    let output = run_bounded(
-        command,
-        Some(stdin),
-        MAX_TEXT_HELPER_BYTES,
-        config.timeout(),
-        cancel,
-    )
-    .await;
+    let output = run_bounded(command, Some(stdin), stdout_limit, timeout, cancel).await;
 
     if output.cancelled {
         return TextCapture {
@@ -849,10 +1083,14 @@ async fn capture_text(
             ..TextCapture::default()
         };
     }
-    decode_text_helper(&output, config)
+    decode_text_helper(&output, config, limit)
 }
 
-fn decode_text_helper(output: &CommandOutcome, config: &CaptureConfig) -> TextCapture {
+fn decode_text_helper(
+    output: &CommandOutcome,
+    config: &CaptureConfig,
+    limit: usize,
+) -> TextCapture {
     if output.timed_out {
         return TextCapture {
             warnings: vec![warning(
@@ -935,7 +1173,7 @@ fn decode_text_helper(output: &CommandOutcome, config: &CaptureConfig) -> TextCa
         // Clamp before sanitizing so a huge helper payload cannot allocate
         // much more than the configured text budget. The truncation flag is
         // preserved so provenance still reports lossy capture.
-        let (raw_text, truncated) = clamp_chars(&source.text, config.text_limit().max(1));
+        let (raw_text, truncated) = clamp_chars(&source.text, limit.max(1));
         capture.sources.push(TextSource {
             kind,
             scope,
@@ -1305,9 +1543,39 @@ mod tests {
         assert!(config.terminal);
         assert!(config.screenshots);
         assert!(config.ocr);
+        assert!(config.full_text);
         assert_eq!(config.max_text_chars, 24_000);
         assert_eq!(config.max_image_edge, 1_280);
         assert_eq!(config.timeout_ms, 2_500);
+        assert_eq!(config.full_max_text_chars, 500_000);
+        assert_eq!(config.full_max_nodes, 50_000);
+        assert_eq!(config.full_max_depth, 120);
+        assert_eq!(config.full_budget_ms, 8_000);
+        assert_eq!(config.full_timeout_ms, 12_000);
+    }
+
+    #[test]
+    fn full_text_limits_are_clamped_and_keep_timeout_headroom() {
+        let mut config = CaptureConfig {
+            full_max_text_chars: usize::MAX,
+            full_max_nodes: 0,
+            full_max_depth: usize::MAX,
+            full_budget_ms: 900_000,
+            full_timeout_ms: 1,
+            ..CaptureConfig::default()
+        };
+        assert_eq!(config.full_text_limit(), MAX_FULL_TEXT_CHARS);
+        assert_eq!(config.full_node_limit(), DEFAULT_FULL_NODES);
+        assert_eq!(config.full_depth_limit(), MAX_FULL_DEPTH);
+        assert_eq!(config.full_budget(), Duration::from_millis(MAX_TIMEOUT_MS));
+        assert_eq!(config.full_timeout(), Duration::from_millis(MAX_TIMEOUT_MS));
+
+        config.full_budget_ms = 3_000;
+        config.full_timeout_ms = 2_000;
+        assert_eq!(config.full_timeout(), Duration::from_millis(4_000));
+
+        config.full_timeout_ms = 10_000;
+        assert_eq!(config.full_timeout(), Duration::from_millis(10_000));
     }
 
     #[test]
@@ -1357,7 +1625,7 @@ mod tests {
             terminal: false,
             ..CaptureConfig::default()
         };
-        let capture = decode_text_helper(&output, &config);
+        let capture = decode_text_helper(&output, &config, config.text_limit());
         assert_eq!(capture.sources.len(), 1);
         assert_eq!(capture.sources[0].kind, "accessibility");
         assert_eq!(capture.sources[0].text, "a11y text");
@@ -1388,7 +1656,11 @@ mod tests {
             stderr: "AT-SPI unavailable".to_string(),
             ..CommandOutcome::default()
         };
-        let capture = decode_text_helper(&output, &CaptureConfig::default());
+        let capture = decode_text_helper(
+            &output,
+            &CaptureConfig::default(),
+            CaptureConfig::default().text_limit(),
+        );
         assert!(capture.sources.is_empty());
         assert!(capture.warnings[0].starts_with("text_helper_failed:"));
         assert!(capture.warnings[0].contains("AT-SPI unavailable"));
@@ -1610,9 +1882,104 @@ mod tests {
             max_text_chars: 4,
             ..CaptureConfig::default()
         };
-        let capture = decode_text_helper(&output, &config);
+        let capture = decode_text_helper(&output, &config, config.text_limit());
         assert_eq!(capture.sources[0].text, "more");
         assert!(capture.sources[0].truncated);
+    }
+
+    #[test]
+    fn full_capture_options_expose_the_deep_budget() {
+        let config = CaptureConfig {
+            full_max_text_chars: 123_456,
+            full_max_nodes: 4321,
+            full_max_depth: 32,
+            full_budget_ms: 6_500,
+            ..CaptureConfig::default()
+        };
+        let options = full_capture_options(&config);
+        assert_eq!(options["max_text_chars"], 123_456);
+        assert_eq!(options["max_nodes"], 4321);
+        assert_eq!(options["max_depth"], 32);
+        assert_eq!(options["budget_ms"], 6_500);
+        assert_eq!(options["accessibility"], true);
+        assert_eq!(options["terminal"], true);
+    }
+
+    #[tokio::test]
+    async fn full_capture_helper_receives_deep_options_and_returns_full_text() {
+        let dir = mock_dir("full-helper");
+        let input_path = dir.join("input.json");
+        let script_path = dir.join("mock-python");
+        let helper_json = r#"{"sources":[{"kind":"accessibility","scope":"matched-window","text":"0123456789abcdefghijABCDEFGHIJ"}],"warnings":[]}"#;
+        executable(
+            &script_path,
+            &format!(
+                "#!/bin/sh\ncat > \"{}\"\nprintf '%s\\n' '{}'\n",
+                input_path.display(),
+                helper_json
+            ),
+        );
+        std::env::set_var("DROPS_CAPTURE_PYTHON", &script_path);
+
+        let config = CaptureConfig {
+            max_text_chars: 8,
+            full_max_text_chars: 200,
+            full_max_nodes: 777,
+            full_max_depth: 21,
+            full_budget_ms: 450,
+            full_timeout_ms: 2_000,
+            ..CaptureConfig::default()
+        };
+        let mut context = json!({
+            "kind": "window",
+            "window": {"address": "0x1", "pid": 1, "title": "fixture"},
+        });
+        context["capture_options"] = full_capture_options(&config);
+        let input = serde_json::to_vec(&context).expect("input");
+
+        let capture = capture_text(
+            &input,
+            &config,
+            &CancellationToken::new(),
+            config.full_text_limit(),
+            config.full_timeout(),
+            MAX_FULL_HELPER_BYTES,
+        )
+        .await;
+
+        std::env::remove_var("DROPS_CAPTURE_PYTHON");
+
+        assert_eq!(capture.sources.len(), 1);
+        assert_eq!(capture.sources[0].text.len(), 30);
+        assert!(!capture.sources[0].truncated);
+        let written = std::fs::read_to_string(&input_path).expect("helper stdin");
+        assert!(written.contains("\"max_text_chars\":200"), "{written}");
+        assert!(written.contains("\"max_nodes\":777"), "{written}");
+        assert!(written.contains("\"max_depth\":21"), "{written}");
+        assert!(written.contains("\"budget_ms\":450"), "{written}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn full_decode_uses_the_full_limit_not_the_preview_limit() {
+        let output = CommandOutcome {
+            stdout: br#"{"sources":[{"kind":"accessibility","text":"0123456789"}]}"#.to_vec(),
+            success: true,
+            ..CommandOutcome::default()
+        };
+        let config = CaptureConfig {
+            max_text_chars: 4,
+            full_max_text_chars: 10,
+            ..CaptureConfig::default()
+        };
+
+        let preview = decode_text_helper(&output, &config, config.text_limit());
+        assert_eq!(preview.sources[0].text, "0123");
+        assert!(preview.sources[0].truncated);
+
+        let full = decode_text_helper(&output, &config, config.full_text_limit());
+        assert_eq!(full.sources[0].text, "0123456789");
+        assert!(!full.sources[0].truncated);
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::context_files::Skill;
-use crate::ExternalTool;
+use crate::{ContextTool, ExternalTool};
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 60_000;
 
@@ -81,6 +81,7 @@ pub(crate) enum Tool {
     Bash,
     Skill,
     External(ExternalTool),
+    Context(ContextTool),
 }
 
 impl Tool {
@@ -92,6 +93,7 @@ impl Tool {
             Self::Bash => "bash",
             Self::Skill => "skill",
             Self::External(tool) => &tool.name,
+            Self::Context(tool) => &tool.name,
         }
     }
 
@@ -101,6 +103,7 @@ impl Tool {
             Self::Write | Self::Edit => Risk::Mutating,
             Self::Bash => Risk::Dangerous,
             Self::External(tool) => Risk::parse(&tool.risk),
+            Self::Context(tool) => Risk::parse(&tool.risk),
         }
     }
 
@@ -183,6 +186,21 @@ impl Tool {
                     }
                 }
             }),
+            Self::Context(tool) => {
+                let parameters = if tool.parameters.is_object() {
+                    tool.parameters.clone()
+                } else {
+                    json!({ "type": "object", "properties": {}, "additionalProperties": true })
+                };
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": parameters
+                    }
+                })
+            }
             Self::External(tool) => {
                 let parameters = if tool.parameters.is_object() {
                     tool.parameters.clone()
@@ -211,6 +229,7 @@ impl ToolRegistry {
     pub(crate) fn new(
         root: PathBuf,
         allow_shell: bool,
+        context: Vec<ContextTool>,
         external: Vec<ExternalTool>,
         skills: Vec<Skill>,
     ) -> Self {
@@ -221,12 +240,24 @@ impl ToolRegistry {
         if !skills.is_empty() {
             tools.push(Tool::Skill);
         }
+        // Desktop-provided tools sit between built-ins and user external tools:
+        // they cannot shadow core behavior, and a broken external command
+        // cannot shadow the anchor tool the daemon just advertised.
+        for tool in context {
+            if tool.name.trim().is_empty() {
+                continue;
+            }
+            if tools.iter().any(|existing| existing.name() == tool.name) {
+                continue;
+            }
+            tools.push(Tool::Context(tool));
+        }
         for tool in external {
             if tool.name.trim().is_empty() {
                 continue;
             }
-            // Built-ins always win, and the first external tool with a given
-            // name wins over later duplicates.
+            // Built-ins always win, and the first tool with a given name wins
+            // over later duplicates.
             if tools.iter().any(|existing| existing.name() == tool.name) {
                 continue;
             }
@@ -266,6 +297,10 @@ impl ToolRegistry {
             Tool::Edit => files::edit(&self.ctx, arguments),
             Tool::Bash => shell::bash(&self.ctx, arguments, cancel).await,
             Tool::Skill => skill(&self.ctx, arguments),
+            Tool::Context(context) => match context.handler.call(arguments, cancel).await {
+                Ok(content) => ToolOutcome::ok(content),
+                Err(err) => ToolOutcome::error(format!("{err:#}")),
+            },
             Tool::External(external) => {
                 external::execute(&self.ctx, external, arguments, cancel).await
             }
@@ -360,11 +395,23 @@ mod tests {
 
     #[test]
     fn bash_is_absent_without_allow_shell() {
-        let without = ToolRegistry::new(PathBuf::from("/tmp"), false, Vec::new(), Vec::new());
+        let without = ToolRegistry::new(
+            PathBuf::from("/tmp"),
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert!(without.find("bash").is_none());
         assert!(!without.names().contains(&"bash"));
 
-        let with = ToolRegistry::new(PathBuf::from("/tmp"), true, Vec::new(), Vec::new());
+        let with = ToolRegistry::new(
+            PathBuf::from("/tmp"),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert!(with.find("bash").is_some());
         assert_eq!(with.find("bash").unwrap().risk(), Risk::Dangerous);
     }
@@ -378,7 +425,13 @@ mod tests {
             parameters: json!({"type":"object","properties":{}}),
             risk: "read-only".into(),
         };
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"), false, vec![external], Vec::new());
+        let registry = ToolRegistry::new(
+            PathBuf::from("/tmp"),
+            false,
+            Vec::new(),
+            vec![external],
+            Vec::new(),
+        );
         let read = registry.find("read").unwrap();
         assert!(matches!(read, Tool::Read));
         assert_eq!(
@@ -391,9 +444,90 @@ mod tests {
         );
     }
 
+    struct EchoHandler;
+
+    impl crate::ContextToolHandler for EchoHandler {
+        fn call<'a>(
+            &'a self,
+            arguments: &'a Value,
+            _cancel: &'a CancellationToken,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>>
+        {
+            Box::pin(async move { Ok(format!("echo: {arguments}")) })
+        }
+    }
+
+    fn context_tool(name: &str, risk: &str) -> ContextTool {
+        ContextTool::new(
+            name,
+            "desktop context",
+            json!({"type":"object","properties":{}}),
+            risk,
+            std::sync::Arc::new(EchoHandler),
+        )
+    }
+
+    #[test]
+    fn context_tools_are_registered_after_builtins_and_default_to_approval() {
+        let registry = ToolRegistry::new(
+            PathBuf::from("/tmp"),
+            false,
+            vec![
+                context_tool("window_content", "read-only"),
+                context_tool("read", "read-only"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let window = registry.find("window_content").expect("context tool");
+        assert_eq!(window.risk(), Risk::ReadOnly);
+        assert!(matches!(registry.find("read"), Some(Tool::Read)));
+        assert_eq!(
+            registry
+                .names()
+                .iter()
+                .filter(|name| **name == "read")
+                .count(),
+            1
+        );
+
+        let unknown_risk = ToolRegistry::new(
+            PathBuf::from("/tmp"),
+            false,
+            vec![context_tool("opaque", "surprising")],
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(unknown_risk.find("opaque").unwrap().risk(), Risk::Dangerous);
+    }
+
+    #[tokio::test]
+    async fn context_tool_handler_result_becomes_the_tool_output() {
+        let registry = ToolRegistry::new(
+            PathBuf::from("/tmp"),
+            false,
+            vec![context_tool("window_content", "read-only")],
+            Vec::new(),
+            Vec::new(),
+        );
+        let tool = registry.find("window_content").expect("context tool");
+        let outcome = registry
+            .execute(tool, &json!({"action": "read"}), &CancellationToken::new())
+            .await;
+        assert!(!outcome.is_error);
+        assert_eq!(outcome.content, "echo: {\"action\":\"read\"}");
+    }
+
     #[test]
     fn definitions_are_openai_tool_objects() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"), true, Vec::new(), Vec::new());
+        let registry = ToolRegistry::new(
+            PathBuf::from("/tmp"),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
         let definitions = registry.definitions();
         let names: Vec<_> = definitions
             .iter()
