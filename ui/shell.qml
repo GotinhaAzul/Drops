@@ -12,7 +12,8 @@ ShellRoot {
     // Surface identity depends only on blob ids, never on streaming messages.
     property var blobIds: []
     property string selectedId: ""
-    property var currentDrop: state.blobs.find(b=>b.id===selectedId) || null
+    property var selected: state.blobs.find(b => b.id === selectedId) || null
+    property var currentDrop: selected
     property var looks: ["drop","cat","sprout"]
     property string pendingLook: "drop"
     property bool settingsOpen: false
@@ -25,6 +26,9 @@ ShellRoot {
     property bool skipMotion: true
     property bool settling: false
     property string recentDropId: ""
+    property string autoChatId: ""
+    property bool autoChatPending: false
+    property var chatViews: ({})
     function loadSettings() {
         const c=state.connection || ({})
         endpoint.text=c.base_url || "http://127.0.0.1:11434/v1"
@@ -47,7 +51,10 @@ ShellRoot {
         if(copy.content && copy.content.image)delete copy.content.image.data_url
         return JSON.stringify(copy,null,2)
     }
-    property var selected: chatOpen ? (state.blobs.find(b => b.id === selectedId) || null) : null
+    function openSettings() {
+        loadSettings();settingsOpen=true;failure=""
+        if(!state.panel_open)send({type:"toggle"})
+    }
     property var appearance: state.appearance || ({})
     property color accent: appearance.accent || "#a7d8f5"
     property color background: appearance.background || "#20251f"
@@ -59,14 +66,16 @@ ShellRoot {
     property bool dragging: false
     property var preview: null
     property string chatSession: ""
-    property bool busy: !!selected && ["capturing","thinking","waiting","stopping"].includes(selected.state)
+    property bool hasModel: !!(state.connection && String(state.connection.model || "").trim())
+    property bool selectedBusy: !!selected && ["capturing","thinking","waiting","stopping"].includes(selected.state)
     ListModel { id: chatModel; dynamicRoles: true }
     property var thinkingExpanded: ({})
     property string thinkingMode: ["shown","collapsed","hidden"].includes(appearance.thinking_mode) ? appearance.thinking_mode : "collapsed"
     function entryVisible(entry) {
         if (!entry) return false
         if (entry.type === "thinking") return root.thinkingMode !== "hidden" && String(entry.text || "").trim().length > 0
-        return ["user","text","error","tool_start","tool_result"].includes(entry.type)
+        if (entry.type === "tool_result") return !!entry.is_error
+        return ["user","text","error","tool_start"].includes(entry.type)
     }
     function isThinkingExpanded(key) {
         const value=root.thinkingExpanded[key]
@@ -78,7 +87,7 @@ ShellRoot {
         root.thinkingExpanded=next
     }
     function syncChat() {
-        if (chatSession !== selectedId) { chatModel.clear(); chatSession=selectedId; thinkingExpanded={}; chat.previousContentHeight=0 }
+        if (chatSession !== selectedId) { chatModel.clear(); chatSession=selectedId; thinkingExpanded={} }
         const history = selected ? selected.history : []
         while (chatModel.count > history.length) chatModel.remove(chatModel.count-1)
         for (let i=0;i<history.length;i++) {
@@ -91,15 +100,110 @@ ShellRoot {
         if (!connected) { failure="Drops is reconnecting…"; return }
         bridge.write(JSON.stringify(command)+"\n")
     }
+    function shortLabel(blob) {
+        if (!blob) return "this window"
+        const label=String(blob.placement && blob.placement.label || "").trim()
+        if (!label || label==="Ready to place") return blob.placement && blob.placement.anchor && blob.placement.anchor.kind==="workspace" ? "this workspace" : "this window"
+        return label.length>38 ? label.slice(0,36).trim()+"…" : label
+    }
+    function contextKind(blob) {
+        if (!blob) return "window"
+        const anchor=blob.placement && blob.placement.anchor || ({})
+        if (anchor.kind==="workspace") return "workspace"
+        const context=blob.context || ({})
+        const window=context.window || ({})
+        const hay=(String(window.class || "")+" "+String(window.title || "")+" "+String(blob.placement && blob.placement.label || "")).toLowerCase()
+        const text=String(context.content && context.content.text || "").toLowerCase()
+        if (/(^|\s)(htop|btop|top|glances)(\s|$)|system monitor|process (list|manager)/.test(hay) || /load average|cpu\(s\)|%cpu|mib mem/.test(text)) return "processes"
+        if (/terminal|kitty|alacritty|foot|ghostty|wezterm|konsole|xterm/.test(hay)) return "terminal"
+        if (/firefox|chromium|chrome|brave|zen browser|epiphany|webkit/.test(hay)) return "browser"
+        if (/(^|\s)(code|code-oss|codium|zed|nvim|vim|emacs|helix)(\s|$)|text editor|sublime/.test(hay)) return "editor"
+        return "window"
+    }
+    function greetingFor(blob) {
+        const kind=contextKind(blob)
+        const label=shortLabel(blob)
+        if (kind==="processes") return "Oh, some processes! What do you need my help for?"
+        if (kind==="terminal") return "I'm on your terminal. Want a second pair of eyes?"
+        if (kind==="browser") return "I'm reading this page with you. Want the short version?"
+        if (kind==="editor") return "I'm on " + label + ". Want me to take a look?"
+        if (kind==="workspace") return "This workspace is all mine. What should we do?"
+        return "I'm on " + label + ". What do you need?"
+    }
+    function suggestionsFor(blob) {
+        const kind=contextKind(blob)
+        if (kind==="processes") return [
+            {label:"How's my CPU?",prompt:"How's my CPU right now?"},
+            {label:"Biggest memory hog?",prompt:"Which process is using the most memory?"}
+        ]
+        if (kind==="terminal") return [
+            {label:"What just happened?",prompt:"Look at this terminal and tell me what just happened."},
+            {label:"Find the error",prompt:"Is there an error in this terminal? Explain it simply."}
+        ]
+        if (kind==="browser") return [
+            {label:"Summarize this page",prompt:"Summarize this page in three short bullets."},
+            {label:"What should I notice?",prompt:"What are the most important points on this page?"}
+        ]
+        if (kind==="editor") return [
+            {label:"Review this file",prompt:"Review what I'm looking at and point out anything risky."},
+            {label:"Explain this",prompt:"Explain what this file does in plain language."}
+        ]
+        if (kind==="workspace") return [
+            {label:"What's open here?",prompt:"What's open on this workspace?"},
+            {label:"What can I close?",prompt:"What's open here, and what can I close?"}
+        ]
+        return [
+            {label:"What am I looking at?",prompt:"What am I looking at in this window?"},
+            {label:"What could go wrong?",prompt:"Is there anything here I should worry about?"}
+        ]
+    }
+    function stateCaption(blob) {
+        if (!blob) return ""
+        if (blob.state==="capturing") return "reading this window"
+        if (blob.state==="thinking") return "thinking"
+        if (blob.state==="waiting") return "needs your go-ahead"
+        if (blob.state==="stopping") return "stopping"
+        if (blob.state==="error") return "hit a snag"
+        return ""
+    }
+    function openChat(id, focus) {
+        if (!id) return
+        const blob=state.blobs.find(b=>b.id===id)
+        if (!blob || !blob.placement || blob.placement.anchor.kind==="panel") return
+        selectedId=id;chatOpen=true;failure=""
+        if (state.panel_open) send({type:"toggle"})
+        if (focus!==false) focusTimer.restart()
+    }
+    function closeChat() { chatOpen=false }
+    function toggleChat(id) {
+        if (chatOpen && selectedId===id) closeChat()
+        else openChat(id,true)
+    }
+    function registerChat(id,view) {
+        const next=Object.assign({},chatViews)
+        next[id]=view
+        chatViews=next
+    }
+    function unregisterChat(id) {
+        const next=Object.assign({},chatViews)
+        delete next[id]
+        chatViews=next
+    }
+    function requestChatFocus() {
+        const view=chatViews[selectedId]
+        if (view && view.focusInput) view.focusInput()
+    }
+    function submitChat(id,text) {
+        if (!text || !String(text).trim()) return
+        failure=""
+        send({type:"send",id:id,text:String(text).trim()})
+    }
     function drop(id) {
         dragging=false; preview=null; failure="";settling=true;settleTimer.restart()
         const command={type:"drop",x:0,y:0,use_cursor:true}
         if (id) command.id=id
+        autoChatPending=!!id
         send(command)
-    }
-    function openChat(id) {
-        selectedId=id; chatOpen=true
-        if (!state.panel_open) send({type:"toggle"})
     }
     Process {
         id: bridge
@@ -114,14 +218,20 @@ ShellRoot {
                         root.connected=true
                         const ids=msg.state.blobs.map(b=>b.id)
                         if (JSON.stringify(ids)!==JSON.stringify(root.blobIds)) root.blobIds=ids
-                        if (!msg.state.panel_open) root.chatOpen=false
                         root.state=msg.state
                         if (!ids.includes(root.selectedId)) {root.selectedId=ids[0] || "";root.chatOpen=false}
+                        else if (root.chatOpen) {
+                            const openBlob=msg.state.blobs.find(b=>b.id===root.selectedId)
+                            if (!openBlob || !openBlob.placement.visible || openBlob.placement.anchor.kind==="panel") root.chatOpen=false
+                        }
                         if (!root.settingsInitialized) {root.loadSettings();root.settingsInitialized=true;root.settingsOpen=!msg.state.connection || !msg.state.connection.model}
                         root.syncChat()
                     } else if (msg.type === "context") {root.inspectedContext=msg.context}
                     else if (msg.type === "pointer") {root.pointerPending=false;if(msg.cursor){root.cursor=msg.cursor;root.cursorReady=true;motionWarmup.start()}}
-                    else if(msg.type==="ok" && msg.id) {root.selectedId=msg.id;root.recentDropId=msg.id;recentTimer.restart()}
+                    else if(msg.type==="ok" && msg.id) {
+                        root.selectedId=msg.id;root.recentDropId=msg.id;recentTimer.restart()
+                        if(root.autoChatPending){root.autoChatPending=false;root.autoChatId=msg.id;autoChatTimer.restart()}
+                    }
                     else if(msg.type==="ok" && msg.configured) {root.settingsOpen=false;root.failure=""}
                     else if (msg.type === "preview" && root.dragging) {root.preview=msg.geometry ? msg : null;root.failure=""}
                     else if (msg.type === "error") root.failure=msg.message
@@ -134,6 +244,14 @@ ShellRoot {
     Timer {id:motionWarmup;interval:32;onTriggered:root.skipMotion=false}
     Timer {id:settleTimer;interval:180;onTriggered:root.settling=false}
     Timer {id:recentTimer;interval:1100;onTriggered:root.recentDropId=""}
+    Timer {id:focusTimer;interval:90;onTriggered:root.requestChatFocus()}
+    Timer {
+        id:autoChatTimer;interval:520
+        onTriggered:{
+            const blob=root.state.blobs.find(b=>b.id===root.autoChatId)
+            if(blob && blob.placement && blob.placement.anchor.kind!=="panel" && blob.placement.visible && !root.dragging) root.openChat(blob.id,false)
+        }
+    }
     Timer {interval:16;repeat:true;running:root.dragging;onTriggered:{if(!root.pointerPending){root.pointerPending=true;root.send({type:"pointer"})}}}
     Timer { interval:120; repeat:true; running:root.dragging; onTriggered:root.send({type:"preview",x:0,y:0,use_cursor:true}) }
 
@@ -188,10 +306,20 @@ ShellRoot {
     }
 
     component DropFace: Rectangle {
+        id:face
         property bool awake:true
+        property bool hovered:false
         property string look:"drop"
         property color tint:look==="cat" ? "#f2c6a0" : look==="sprout" ? "#b8dca4" : root.accent
+        property real eyeOpen:1
         color:tint
+        scale:hovered && awake ? 1.06 : 1
+        Behavior on scale {NumberAnimation{duration:140;easing.type:Easing.OutCubic}}
+        Timer {
+            interval:3200;repeat:true;running:face.awake
+            onTriggered:{face.eyeOpen=0.08;reopen.restart();interval=2600+Math.random()*3200}
+        }
+        Timer {id:reopen;interval:115;onTriggered:face.eyeOpen=1}
         Rectangle {visible:parent.awake && parent.look==="cat";width:parent.width*0.28;height:width;rotation:45;radius:3;color:parent.color;x:parent.width*0.08;y:-height*0.25;z:-1}
         Rectangle {visible:parent.awake && parent.look==="cat";width:parent.width*0.28;height:width;rotation:45;radius:3;color:parent.color;x:parent.width*0.64;y:-height*0.25;z:-1}
         Rectangle {visible:parent.awake && parent.look==="sprout";width:parent.width*0.34;height:parent.width*0.18;radius:height/2;color:"#7fa76a";rotation:30;x:parent.width*0.2;y:-height*0.65}
@@ -201,35 +329,382 @@ ShellRoot {
         Behavior on height { NumberAnimation {duration:160} }
         Row {
             anchors.centerIn:parent; spacing:parent.width*0.15; visible:parent.awake
-            Rectangle { width:parent.parent.width*0.13; height:width*1.2; radius:width; color:"#27322a" }
-            Rectangle { width:parent.parent.width*0.13; height:width*1.2; radius:width; color:"#27322a" }
+            Rectangle {
+                width:parent.parent.width*0.13;height:width*1.2*parent.parent.eyeOpen;radius:width;color:"#27322a";clip:true
+                Behavior on height {NumberAnimation{duration:90;easing.type:Easing.OutQuad}}
+                Rectangle {width:parent.width*0.3;height:width;radius:width;color:"#ffffff";opacity:0.5;x:parent.width*0.16;y:parent.height*0.14}
+            }
+            Rectangle {
+                width:parent.parent.width*0.13;height:width*1.2*parent.parent.eyeOpen;radius:width;color:"#27322a";clip:true
+                Behavior on height {NumberAnimation{duration:90;easing.type:Easing.OutQuad}}
+                Rectangle {width:parent.width*0.3;height:width;radius:width;color:"#ffffff";opacity:0.5;x:parent.width*0.16;y:parent.height*0.14}
+            }
         }
     }
     component DragArea: MouseArea {
         property string blobId:""
         property real sx:0
         property real sy:0
-        anchors.fill:parent; cursorShape:Qt.OpenHandCursor
-        onPressed: mouse=> {sx=mouse.x;sy=mouse.y;root.dragId=blobId;root.cursorReady=false;root.skipMotion=true;const b=root.state.blobs.find(b=>b.id===blobId);root.dragLook=b ? b.appearance || "drop" : root.pendingLook;root.settling=false}
-        onPositionChanged: mouse=> {if(pressed && Math.abs(mouse.x-sx)+Math.abs(mouse.y-sy)>6) root.dragging=true}
+        anchors.fill:parent; cursorShape:Qt.OpenHandCursor; hoverEnabled:true
+        onPressed: mouse=> {
+            sx=mouse.x;sy=mouse.y;root.dragId=blobId;root.cursorReady=false;root.skipMotion=true
+            const b=root.state.blobs.find(b=>b.id===blobId)
+            root.dragLook=b ? b.appearance || "drop" : root.pendingLook
+            root.settling=false
+        }
+        onPositionChanged: mouse=> {
+            if(pressed && Math.abs(mouse.x-sx)+Math.abs(mouse.y-sy)>6){
+                if(!root.dragging && root.chatOpen && root.selectedId===blobId)root.closeChat()
+                root.dragging=true
+            }
+        }
         onReleased: mouse=> {
             if (root.dragging) root.drop(blobId)
-            else if(blobId && root.state.blobs.find(b=>b.id===blobId && b.placement.anchor.kind!=="panel")) root.openChat(blobId)
+            else if(blobId && root.state.blobs.find(b=>b.id===blobId && b.placement.anchor.kind!=="panel")) root.toggleChat(blobId)
             root.dragging=false;root.preview=null
         }
         onCanceled: {root.dragging=false;root.preview=null;root.settling=false;root.pointerPending=false}
     }
+
+    // The conversation lives with the drop: a compact speech bubble that grows
+    // above it, switches to a chat log once the first message is sent, and
+    // disappears when the anchor does.
+    component ChatBubble: PanelWindow {
+        id:bubble
+        required property var blob
+        required property var monitor
+        required property var place
+        property bool open: !!blob && root.chatOpen && root.selectedId===blob.id
+        property bool busy: !!blob && ["capturing","thinking","waiting","stopping"].includes(blob.state)
+        property bool waiting: !!blob && blob.state==="waiting" && !!blob.approval
+        property bool hasHistory: !!blob && blob.history.length>0
+        property bool intro: false
+        property int dotPhase: 0
+        property real previousLogHeight: 0
+        property real edgePad: 8
+        property real spaceAbove: Math.max(0, place.y - monitor.y - edgePad - 14)
+        property real spaceBelow: Math.max(0, monitor.y + monitor.height - (place.y+root.blobSize+14) - edgePad)
+        property bool above: spaceAbove > spaceBelow
+        property real tailSize: 9
+        property real left: Math.max(monitor.x+edgePad, Math.min(place.x+28-bubble.implicitWidth/2, monitor.x+monitor.width-bubble.implicitWidth-edgePad))
+        property real top: above ? Math.max(monitor.y+edgePad, place.y-(bubble.implicitHeight-bubble.tailSize)-14) : Math.min(monitor.y+monitor.height-bubble.implicitHeight-edgePad, place.y+root.blobSize+14-bubble.tailSize)
+        property real tailX: Math.max(20, Math.min(bubble.implicitWidth-20, place.x+28-left))
+        function submit() {
+            if(bubble.busy)return
+            const value=chatInput.text
+            if(!value.trim())return
+            chatInput.text=""
+            root.submitChat(bubble.blob.id,value)
+        }
+        function viewHandle() {
+            return {
+                focusInput:function(){chatInput.forceActiveFocus()},
+                submit:function(){bubble.submit()},
+                sendSuggestion:function(index){bubble.sendSuggestion(index)},
+                input:chatInput,
+                scroll:chatLog,
+                suggestions:suggestionFlow,
+                suggestionCount:root.suggestionsFor(blob).length,
+                greeting:greetingText,
+                window:bubble
+            }
+        }
+        function sendSuggestion(index) {
+            const items=root.suggestionsFor(blob)
+            if(items[index])root.submitChat(blob.id,items[index].prompt)
+        }
+        screen: monitor
+        visible: open && place.visible && !root.capturing
+        anchors {top:true;left:true}
+        margins {top:Math.max(0,bubble.top-monitor.y);left:Math.max(0,bubble.left-monitor.x)}
+        implicitWidth: 312
+        implicitHeight: bubbleBody.height+bubble.tailSize
+        color:"transparent"; exclusionMode:ExclusionMode.Ignore
+        WlrLayershell.namespace:"drops-chat"
+        WlrLayershell.keyboardFocus: bubble.visible ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+        Shortcut {sequence:"Escape";enabled:bubble.visible;onActivated:root.closeChat()}
+        Timer {
+            interval:300;repeat:true;running:bubble.visible && bubble.busy
+            onTriggered:bubble.dotPhase=(bubble.dotPhase+1)%3
+        }
+        onOpenChanged: {
+            if(open && !!blob){
+                intro=false;introTimer.restart()
+                previousLogHeight=0
+                root.registerChat(blob.id,bubble.viewHandle())
+                if(blob.history.length>0)scrollToEnd.restart()
+            } else if(!!blob) {
+                intro=false
+                root.unregisterChat(blob.id)
+            }
+        }
+        Component.onCompleted: if(open && !!blob) {introTimer.restart();root.registerChat(blob.id,bubble.viewHandle())}
+        Component.onDestruction: if(!!blob) root.unregisterChat(blob.id)
+        Timer {id:introTimer;interval:16;onTriggered:bubble.intro=true}
+        Timer {id:scrollToEnd;interval:30;onTriggered:{if(chatLog.contentItem)chatLog.contentItem.contentY=Math.max(0,chatLog.contentHeight-chatLog.height)}}
+
+        Item {
+            id:bubbleBody
+            width:parent.width
+            height:body.implicitHeight+24
+            y:bubble.above ? 0 : bubble.tailSize
+            opacity:bubble.intro ? 1 : 0
+            scale:bubble.intro ? 1 : 0.96
+            transformOrigin:Item.Bottom
+            Behavior on opacity {NumberAnimation{duration:150;easing.type:Easing.OutCubic}}
+            Behavior on scale {NumberAnimation{duration:190;easing.type:Easing.OutCubic}}
+            Rectangle {
+                anchors.fill:bg;anchors.margins:-2;radius:19
+                color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.10)
+            }
+            Rectangle {
+                id:bg
+                anchors.fill:parent;radius:16
+                color:Qt.lighter(root.background,1.08)
+                border.color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.30);border.width:1
+            }
+            Item {
+                width:18;height:bubble.tailSize
+                x:bubble.tailX-width/2
+                y:bubble.above ? bubbleBody.height : -bubble.tailSize
+                clip:true
+                Rectangle {
+                    width:14;height:14;rotation:45;radius:2
+                    x:2;y:bubble.above ? -7 : 2
+                    color:Qt.lighter(root.background,1.08)
+                    border.color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.30);border.width:1
+                }
+            }
+            Column {
+                id:body
+                x:14;y:11;width:parent.width-28;spacing:8
+                Row {
+                    width:parent.width;height:20;spacing:6
+                    Rectangle {
+                        width:6;height:6;radius:3;anchors.verticalCenter:parent.verticalCenter
+                        color:bubble.waiting ? "#eed29b" : bubble.busy ? root.accent : "#7d8a72"
+                    }
+                    Text {
+                        id:headerLine
+                        width:parent.width-54;elide:Text.ElideRight
+                        anchors.verticalCenter:parent.verticalCenter
+                        color:root.muted;font.pixelSize:10;textFormat:Text.PlainText
+                        text:"on "+root.shortLabel(bubble.blob)+(bubble.busy ? "  ·  "+root.stateCaption(bubble.blob) : "")
+                    }
+                    Item {width:4;height:1}
+                    Item {
+                        width:18;height:18;anchors.verticalCenter:parent.verticalCenter
+                        Rectangle {anchors.fill:parent;radius:9;color:hoverClose.containsMouse ? Qt.rgba(root.muted.r,root.muted.g,root.muted.b,0.18) : "transparent"}
+                        Text {anchors.centerIn:parent;text:"×";color:root.muted;font.pixelSize:13}
+                        MouseArea {id:hoverClose;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:root.closeChat()}
+                        Accessible.role:Accessible.Button;Accessible.name:"Close chat"
+                    }
+                }
+                Text {
+                    id:greetingText
+                    visible:!bubble.hasHistory
+                    width:parent.width
+                    wrapMode:Text.Wrap;textFormat:Text.PlainText
+                    color:root.ink;font.pixelSize:13;lineHeight:1.16
+                    text:root.greetingFor(bubble.blob)
+                }
+                Flow {
+                    id:suggestionFlow
+                    visible:!bubble.hasHistory
+                    width:parent.width;spacing:6
+                    Repeater {
+                        model:root.suggestionsFor(bubble.blob)
+                        delegate:Rectangle {
+                            required property var modelData
+                            required property int index
+                            property bool hot:false
+                            width:suggestion.implicitWidth+18;height:26;radius:13
+                            color:hot ? Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.24) : Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.13)
+                            border.color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,hot ? 0.75 : 0.42);border.width:1
+                            Behavior on color {ColorAnimation{duration:110}}
+                            Text {
+                                id:suggestion
+                                anchors.centerIn:parent
+                                text:modelData.label;color:root.accent;font.pixelSize:11
+                            }
+                            MouseArea {
+                                anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
+                                onEntered:parent.hot=true;onExited:parent.hot=false
+                                onClicked:bubble.sendSuggestion(index)
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    visible:!root.hasModel
+                    width:parent.width;height:30;radius:8
+                    color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.10)
+                    Text {anchors.centerIn:parent;text:"Connect a model to start  →";color:root.accent;font.pixelSize:11}
+                    MouseArea {anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:root.openSettings()}
+                }
+                ScrollView {
+                    id:chatLog
+                    objectName:bubble.blob ? "chat-log-"+bubble.blob.id : "chat-log"
+                    visible:bubble.hasHistory
+                    width:parent.width
+                    height:Math.min(chatColumn.implicitHeight,180)
+                    clip:true;contentWidth:availableWidth
+                    ScrollBar.vertical.policy:ScrollBar.AsNeeded
+                    Column {
+                        id:chatColumn
+                        width:chatLog.availableWidth;spacing:7
+                        Repeater {
+                            model:bubble.open ? chatModel : null
+                            delegate:Item {
+                                id:chatEntry
+                                required property var entry
+                                required property int index
+                                property bool thinking:entry.type==="thinking"
+                                property string thinkingKey:root.chatSession+":"+index
+                                property bool shown:root.entryVisible(entry)
+                                width:parent.width
+                                visible:shown
+                                height:shown ? implicitHeight : 0
+                                implicitHeight:thinking ? thought.implicitHeight : line.implicitHeight
+                                Label {
+                                    id:line
+                                    visible:!chatEntry.thinking && chatEntry.shown
+                                    x:chatEntry.entry.type==="user" ? 22 : 0
+                                    width:parent.width-(chatEntry.entry.type==="user" ? 22 : 0)
+                                    wrapMode:Text.Wrap;textFormat:Text.PlainText;font.pixelSize:12
+                                    horizontalAlignment:chatEntry.entry.type==="user" ? Text.AlignRight : Text.AlignLeft
+                                    color:chatEntry.entry.type==="user" ? root.accent : chatEntry.entry.type==="error" ? "#f4a99a" : chatEntry.entry.type==="tool_start" ? root.muted : root.ink
+                                    text:chatEntry.entry.type==="tool_start" ? "↳ "+chatEntry.entry.name : chatEntry.entry.type==="user" ? chatEntry.entry.text : (chatEntry.entry.text || "")
+                                }
+                                ThinkingBlock {
+                                    id:thought
+                                    visible:chatEntry.thinking && chatEntry.shown
+                                    width:parent.width
+                                    entry:chatEntry.entry
+                                    expanded:root.isThinkingExpanded(chatEntry.thinkingKey)
+                                    streaming:chatEntry.index===chatModel.count-1 && !!bubble.blob && bubble.blob.state==="thinking"
+                                    onToggleRequested:root.setThinkingExpanded(chatEntry.thinkingKey,!thought.expanded)
+                                }
+                            }
+                        }
+                        Row {
+                            visible:bubble.busy && !bubble.waiting
+                            height:visible ? 14 : 0;spacing:3
+                            Rectangle {
+                                width:5;height:5;radius:2.5;anchors.verticalCenter:parent.verticalCenter
+                                color:root.accent;opacity:bubble.dotPhase===0 ? 1 : 0.3
+                                Behavior on opacity {NumberAnimation{duration:200}}
+                            }
+                            Rectangle {
+                                width:5;height:5;radius:2.5;anchors.verticalCenter:parent.verticalCenter
+                                color:root.accent;opacity:bubble.dotPhase===1 ? 1 : 0.3
+                                Behavior on opacity {NumberAnimation{duration:200}}
+                            }
+                            Rectangle {
+                                width:5;height:5;radius:2.5;anchors.verticalCenter:parent.verticalCenter
+                                color:root.accent;opacity:bubble.dotPhase===2 ? 1 : 0.3
+                                Behavior on opacity {NumberAnimation{duration:200}}
+                            }
+                        }
+                    }
+                    onContentHeightChanged: {
+                        if (!contentItem) return
+                        const wasAtBottom=bubble.previousLogHeight<=0 || contentItem.contentY+height>=bubble.previousLogHeight-8
+                        bubble.previousLogHeight=contentHeight
+                        if (wasAtBottom) contentItem.contentY=Math.max(0,contentHeight-height)
+                    }
+                }
+                Rectangle {
+                    visible:bubble.waiting
+                    width:parent.width
+                    height:136
+                    color:"#333326";radius:10
+                    Column {
+                        x:8;y:8;width:parent.width-16;spacing:5
+                        Text {text:"Allow this action?";color:root.accent;font.pixelSize:11}
+                        ScrollView {
+                            width:parent.width;height:72;clip:true;contentWidth:availableWidth
+                            TextArea {
+                                width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere
+                                textFormat:TextEdit.PlainText;color:root.ink;font.pixelSize:10
+                                text:bubble.blob && bubble.blob.approval ? JSON.stringify(bubble.blob.approval,null,2) : ""
+                            }
+                        }
+                        Row {
+                            spacing:6
+                            Rectangle {
+                                width:62;height:24;radius:12;color:root.accent
+                                Text {anchors.centerIn:parent;text:"Allow";color:"#1e2a22";font.pixelSize:11}
+                                MouseArea {anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:root.send({type:"confirm",id:bubble.blob.id,approve:true})}
+                            }
+                            Rectangle {
+                                width:62;height:24;radius:12;color:"#414a3d"
+                                Text {anchors.centerIn:parent;text:"Deny";color:root.ink;font.pixelSize:11}
+                                MouseArea {anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:root.send({type:"confirm",id:bubble.blob.id,approve:false})}
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    id:composer
+                    width:parent.width;height:38;radius:19
+                    color:"#2b3428"
+                    border.color:chatInput.activeFocus ? root.accent : (bubble.waiting ? "#eed29b" : "#465142");border.width:1
+                    Behavior on border.color {ColorAnimation{duration:120}}
+                    TextField {
+                        id:chatInput
+                        anchors.left:parent.left;anchors.right:sendButton.left;anchors.top:parent.top;anchors.bottom:parent.bottom
+                        leftPadding:13;rightPadding:4
+                        enabled:!bubble.busy
+                        placeholderText:bubble.busy ? "Working…" : "Ask about this…"
+                        placeholderTextColor:root.muted
+                        color:root.ink;font.pixelSize:12;selectByMouse:true
+                        background:Item {}
+                        onAccepted:bubble.submit()
+                    }
+                    Item {
+                        id:sendButton
+                        width:30;height:30;anchors.right:parent.right;anchors.rightMargin:4;anchors.verticalCenter:parent.verticalCenter
+                        Rectangle {
+                            anchors.fill:parent;radius:15
+                            color:bubble.busy ? "#eed29b" : root.accent
+                            opacity:bubble.busy || chatInput.text.trim().length>0 ? 1 : 0.55
+                            Behavior on opacity {NumberAnimation{duration:120}}
+                        }
+                        Text {
+                            anchors.centerIn:parent
+                            text:bubble.busy ? "■" : "→"
+                            color:"#1e2a22";font.pixelSize:bubble.busy ? 9 : 14
+                        }
+                        MouseArea {
+                            anchors.fill:parent;cursorShape:Qt.PointingHandCursor
+                            onClicked:bubble.busy ? root.send({type:"cancel",id:bubble.blob.id}) : bubble.submit()
+                        }
+                        Accessible.role:Accessible.Button
+                        Accessible.name:bubble.busy ? "Stop" : "Send"
+                    }
+                }
+                Text {
+                    visible:!!root.failure && root.chatOpen && root.selectedId===bubble.blob.id
+                    width:parent.width;wrapMode:Text.Wrap
+                    text:root.failure;color:"#f4a99a";font.pixelSize:10
+                    textFormat:Text.PlainText
+                }
+            }
+        }
+    }
+
     PanelWindow {
         id: panel
         visible:root.state.panel_open && !root.capturing
         anchors {top:true;right:true}
         margins {top:40;right:20}
         implicitWidth:260
-        implicitHeight:root.settingsOpen ? 444 : 250+(root.selected && root.selected.context && root.selected.context.content ? 20 : 0)+(root.selected && root.selected.history.length ? 150 : 0)+(root.selected && root.selected.approval ? 180 : 0)+(root.failure ? 26 : 0)
+        implicitHeight:root.settingsOpen ? 444 : 276+(root.selected && root.selected.context && root.selected.context.content ? 18 : 0)+(root.failure ? 26 : 0)
         color:"transparent";exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-panel"
         WlrLayershell.keyboardFocus:WlrKeyboardFocus.OnDemand
-        Shortcut {sequence:"Escape";enabled:panel.visible;onActivated:root.send({type:"toggle"})}
+        Shortcut {sequence:"Escape";enabled:panel.visible && !root.chatOpen;onActivated:root.send({type:"toggle"})}
         Rectangle {
             anchors.fill:parent;color:root.background;radius:18;border.color:"#4b5545";border.width:1
             ColumnLayout {
@@ -240,14 +715,15 @@ ShellRoot {
                     DropFace {
                         anchors.centerIn:parent;width:76;height:74
                         look:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook
+                        hovered:panelAvatar.containsMouse
                         opacity:!root.currentDrop ? 0.45 : root.dragging && root.dragId===root.currentDrop.id ? 0 : 1
                         Behavior on opacity {NumberAnimation{duration:70}}
-                        DragArea {enabled:!!root.currentDrop;blobId:root.currentDrop ? root.currentDrop.id : ""}
+                        DragArea {id:panelAvatar;enabled:!!root.currentDrop;blobId:root.currentDrop ? root.currentDrop.id : ""}
                     }
                     ToolButton {
                         anchors.top:parent.top;anchors.right:parent.right
-                        text:root.busy ? "■" : "×";font.pixelSize:13;palette.buttonText:root.muted
-                        onClicked: root.busy ? root.send({type:"cancel",id:root.selectedId}) : root.send({type:"toggle"})
+                        text:root.selectedBusy ? "■" : "×";font.pixelSize:13;palette.buttonText:root.muted
+                        onClicked: root.selectedBusy ? root.send({type:"cancel",id:root.selectedId}) : root.send({type:"toggle"})
                     }
                     Row {
                         anchors.bottom:parent.bottom;anchors.horizontalCenter:parent.horizontalCenter;spacing:9
@@ -267,6 +743,24 @@ ShellRoot {
                     text:root.currentDrop ? root.currentDrop.placement.label : "Make a drop, then drag it onto a window"
                     MouseArea {anchors.fill:parent;enabled:!!root.selected;onClicked:root.inspectContext()}
                 }
+                Button {
+                    id:chatButton
+                    Layout.fillWidth:true;Layout.preferredHeight:32
+                    enabled:!!root.currentDrop && root.currentDrop.placement.anchor.kind!=="panel"
+                    text:!root.currentDrop ? "Make a drop to start" : enabled ? "Chat with this drop  →" : "Drag me onto a window"
+                    background:Rectangle {
+                        radius:9
+                        color:chatButton.enabled ? Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.18) : Qt.rgba(root.muted.r,root.muted.g,root.muted.b,0.08)
+                        border.color:chatButton.enabled ? Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.5) : "#3d473a";border.width:1
+                    }
+                    contentItem:Text {
+                        text:chatButton.text;font.pixelSize:11
+                        color:chatButton.enabled ? root.accent : root.muted
+                        horizontalAlignment:Text.AlignHCenter;verticalAlignment:Text.AlignVCenter
+                        elide:Text.ElideRight
+                    }
+                    onClicked:root.openChat(root.currentDrop.id,true)
+                }
                 Label {
                     visible:!!root.selected && !!root.selected.context && !!root.selected.context.content
                     Layout.fillWidth:true;horizontalAlignment:Text.AlignHCenter;color:root.muted;font.pixelSize:10
@@ -284,75 +778,11 @@ ShellRoot {
                     }
                     Button {id:newDropButton;Accessible.name:"New drop";text:"+";ToolTip.visible:hovered;ToolTip.text:"New drop";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:root.blobIds.length<3;onClicked:{root.chatOpen=false;root.send({type:"create",appearance:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook})}}
                     Button {id:deleteDropButton;Accessible.name:"Delete drop";text:"−";ToolTip.visible:hovered;ToolTip.text:"Delete selected drop and conversation";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:!!root.currentDrop;onClicked:root.send({type:"remove",id:root.currentDrop.id})}
-                    ToolButton {text:"⚙";ToolTip.visible:hovered;ToolTip.text:"Model connection";Layout.preferredWidth:28;Layout.preferredHeight:28;onClicked:{root.loadSettings();root.settingsOpen=true;root.failure=""}}
+                    ToolButton {text:"⚙";ToolTip.visible:hovered;ToolTip.text:"Model connection";Layout.preferredWidth:28;Layout.preferredHeight:28;onClicked:root.openSettings()}
                 }
-                ScrollView {
-                    id:chat;visible:!!root.selected && root.selected.history.length>0
-                    Layout.fillWidth:true;Layout.preferredHeight:142;clip:true;contentWidth:availableWidth
-                    property real previousContentHeight:0
-                    Column {
-                        width:chat.availableWidth;spacing:7
-                        Repeater {
-                            model:chatModel
-                            delegate:Item {
-                                id:chatEntry
-                                required property var entry
-                                required property int index
-                                property bool thinking:entry.type==="thinking"
-                                property string thinkingKey:root.chatSession+":"+index
-                                property bool shown:root.entryVisible(entry)
-                                width:parent.width
-                                visible:shown
-                                height:shown ? implicitHeight : 0
-                                implicitHeight:thinking ? thought.implicitHeight : line.implicitHeight
-                                Label {
-                                    id:line
-                                    visible:!chatEntry.thinking && chatEntry.shown
-                                    width:parent.width;wrapMode:Text.Wrap;textFormat:Text.PlainText;font.pixelSize:12
-                                    color:chatEntry.entry.type==="user" ? root.accent : chatEntry.entry.type==="error" ? "#f4a99a" : root.ink
-                                    text:chatEntry.entry.type==="tool_start" ? "↳ "+chatEntry.entry.name : chatEntry.entry.type==="user" ? "you / "+chatEntry.entry.text : (chatEntry.entry.text || "")
-                                }
-                                ThinkingBlock {
-                                    id:thought
-                                    visible:chatEntry.thinking && chatEntry.shown
-                                    width:parent.width
-                                    entry:chatEntry.entry
-                                    expanded:root.isThinkingExpanded(chatEntry.thinkingKey)
-                                    streaming:chatEntry.index===chatModel.count-1 && !!root.selected && root.selected.state==="thinking"
-                                    onToggleRequested:root.setThinkingExpanded(chatEntry.thinkingKey,!thought.expanded)
-                                }
-                            }
-                        }
-                    }
-                    onContentHeightChanged: {
-                        if (!contentItem) return
-                        const wasAtBottom=chat.previousContentHeight<=0 || contentItem.contentY+height>=chat.previousContentHeight-8
-                        chat.previousContentHeight=contentHeight
-                        if (wasAtBottom) contentItem.contentY=Math.max(0,contentHeight-height)
-                    }
-                }
-                Rectangle {
-                    visible:!!root.selected && !!root.selected.approval
-                    Layout.fillWidth:true;Layout.preferredHeight:172;color:"#333326";radius:10
-                    ColumnLayout {
-                        anchors.fill:parent;anchors.margins:8;spacing:5
-                        Label {text:"Allow this action?";color:root.accent;font.pixelSize:12}
-                        ScrollView {
-                            Layout.fillWidth:true;Layout.fillHeight:true;clip:true
-                            TextArea {readOnly:true;wrapMode:TextEdit.WrapAnywhere;color:root.ink;font.pixelSize:11;textFormat:TextEdit.PlainText;text:root.selected && root.selected.approval ? JSON.stringify(root.selected.approval,null,2) : ""}
-                        }
-                        RowLayout {
-                            Button {text:"Allow";onClicked:root.send({type:"confirm",id:root.selectedId,approve:true})}
-                            Button {text:"Deny";onClicked:root.send({type:"confirm",id:root.selectedId,approve:false})}
-                        }
-                    }
-                }
-                TextField {
-                    id:input;Layout.fillWidth:true;Layout.preferredHeight:34
-                    enabled:!!root.selected && root.selected.placement.anchor.kind!=="panel" && !root.busy
-                    placeholderText:root.selected ? "Chat…" : "Place a drop to chat";color:root.ink;font.pixelSize:12
-                    background:Rectangle {color:"#303a2c";radius:7;border.color:input.activeFocus ? root.accent : "#4b5545"}
-                    onAccepted: {if(text.trim()){root.failure="";root.send({type:"send",id:root.selectedId,text:text});text=""}}
+                Label {
+                    Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9;horizontalAlignment:Text.AlignHCenter
+                    text:root.currentDrop && root.currentDrop.placement.anchor.kind==="panel" ? "Drag me out, then click me to chat." : "Click a placed drop to talk right there."
                 }
                 Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;wrapMode:Text.Wrap;color:"#f4a99a";font.pixelSize:10}
             }
@@ -430,22 +860,92 @@ ShellRoot {
                     required property string modelData
                     property var blob:root.state.blobs.find(b=>b.id===modelData) || null
                     property var pos:blob ? blob.placement : ({x:0,y:0,visible:false})
+                    property bool hovered:dropArea.containsMouse && !root.dragging
+                    property bool awake:!!blob && (blob.state!=="idle" || root.recentDropId===modelData || (root.selectedId===modelData && root.chatOpen) || hovered)
+                    property bool waiting:!!blob && blob.state==="waiting"
+                    property bool working:!!blob && ["capturing","thinking","stopping"].includes(blob.state)
+                    property int badgePhase:0
+                    Timer {interval:280;repeat:true;running:placed.working && !root.chatOpen;onTriggered:placed.badgePhase=(placed.badgePhase+1)%3}
                     screen:monitorScope.monitor
                     visible:!root.capturing && !!blob && pos.visible && pos.x>=monitorScope.monitor.x && pos.x<monitorScope.monitor.x+monitorScope.monitor.width && pos.y>=monitorScope.monitor.y && pos.y<monitorScope.monitor.y+monitorScope.monitor.height
                     anchors {top:true;left:true}
-                    margins {top:Math.max(0,pos.y-monitorScope.monitor.y);left:Math.max(0,pos.x-monitorScope.monitor.x)}
-                    implicitWidth:56;implicitHeight:56;color:"transparent";exclusionMode:ExclusionMode.Ignore
+                    margins {top:Math.max(0,pos.y-monitorScope.monitor.y-8);left:Math.max(0,pos.x-monitorScope.monitor.x-8)}
+                    implicitWidth:72;implicitHeight:72;color:"transparent";exclusionMode:ExclusionMode.Ignore
                     WlrLayershell.namespace:"drops-blob";WlrLayershell.keyboardFocus:WlrKeyboardFocus.None
+                    Rectangle {
+                        id:ripple
+                        anchors.centerIn:face
+                        width:face.width;height:width;radius:width/2
+                        color:"transparent";border.color:root.accent;border.width:2
+                        opacity:0;scale:0.7
+                        SequentialAnimation {
+                            id:rippleAnim
+                            ParallelAnimation {
+                                NumberAnimation {target:ripple;property:"opacity";from:0.75;to:0;duration:620;easing.type:Easing.OutCubic}
+                                NumberAnimation {target:ripple;property:"scale";from:0.7;to:2.05;duration:620;easing.type:Easing.OutCubic}
+                            }
+                        }
+                        Connections {
+                            target:root
+                            function onRecentDropIdChanged(){if(root.recentDropId===placed.modelData)rippleAnim.restart()}
+                        }
+                    }
+                    Item {
+                        id:stateRingWrap
+                        anchors.centerIn:face
+                        width:face.width+9;height:width
+                        visible:(placed.working || placed.waiting) && !(root.chatOpen && root.selectedId===placed.modelData)
+                        Rectangle {
+                            id:stateRing
+                            anchors.fill:parent;radius:width/2
+                            color:"transparent";border.width:2
+                            border.color:placed.waiting ? "#eed29b" : root.accent
+                            opacity:0.6
+                            SequentialAnimation on opacity {
+                                running:stateRingWrap.visible
+                                loops:Animation.Infinite
+                                NumberAnimation {to:0.22;duration:700}
+                                NumberAnimation {to:0.8;duration:700}
+                            }
+                        }
+                    }
                     DropFace {
-                        anchors.centerIn:parent;awake:placed.blob && (placed.blob.state!=="idle" || root.recentDropId===placed.modelData || root.selectedId===placed.modelData && root.chatOpen)
+                        id:face
+                        anchors.centerIn:parent
+                        awake:placed.awake
+                        hovered:placed.hovered
                         look:placed.blob ? placed.blob.appearance || "drop" : "drop"
                         opacity:root.dragging && root.dragId===placed.modelData ? 0 : 1
                         Behavior on opacity {NumberAnimation{duration:70}}
                         width:awake ? root.blobSize : 13;height:awake ? root.blobSize-2 : 13
-                        border.width:placed.blob && placed.blob.state==="waiting" ? 2 : 0
+                        border.width:placed.waiting ? 2 : 0
                         border.color:"#eed29b"
                     }
-                    DragArea {blobId:placed.modelData}
+                    Rectangle {
+                        visible:placed.working && !root.chatOpen
+                        anchors.right:face.right;anchors.top:face.top;anchors.rightMargin:-7;anchors.topMargin:-6
+                        width:24;height:14;radius:7;color:Qt.lighter(root.background,1.15);border.color:root.accent;border.width:1
+                        Row {
+                            anchors.centerIn:parent;spacing:2
+                            Repeater {
+                                model:3
+                                delegate:Rectangle {
+                                    required property int index
+                                    width:3;height:3;radius:1.5;color:root.accent
+                                    opacity:index===placed.badgePhase ? 1 : 0.35
+                                    Behavior on opacity {NumberAnimation{duration:180}}
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        visible:placed.waiting && !root.chatOpen
+                        anchors.right:face.right;anchors.top:face.top;anchors.rightMargin:-8;anchors.topMargin:-8
+                        width:17;height:17;radius:8.5;color:"#eed29b"
+                        Text {anchors.centerIn:parent;text:"!";color:"#2b2a1f";font.pixelSize:11;font.bold:true}
+                    }
+                    DragArea {id:dropArea;blobId:placed.modelData}
+                    ChatBubble {blob:placed.blob;monitor:monitorScope.monitor;place:placed.pos}
                 }
             }
         }
