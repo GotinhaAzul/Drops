@@ -111,6 +111,7 @@ for line in sys.stdin:
 '''
     source=source.replace("id: root","id: root\n"+harness,1)
     path=base/"shell.qml";path.write_text(source)
+    (base/"markdown.js").write_text((ROOT/"ui/markdown.js").read_text())
     result=subprocess.run(["quickshell","-p",str(path)],env=dict(os.environ,QT_QPA_PLATFORM="offscreen",DROPS_CTL=str(bridge)),capture_output=True,text=True,timeout=12)
     output=result.stdout+result.stderr
     assert "TEST_BUBBLE_DONE" in output and "TEST_FAILURE" not in output,output
