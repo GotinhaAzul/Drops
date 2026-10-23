@@ -877,10 +877,11 @@ ShellRoot {
                     property bool awake:!!blob && (blob.state!=="idle" || root.recentDropId===modelData || (root.selectedId===modelData && root.chatOpen) || hovered)
                     property bool waiting:!!blob && blob.state==="waiting"
                     property bool working:!!blob && ["capturing","thinking","stopping"].includes(blob.state)
+                    property bool onMonitor:!!blob && pos.visible && pos.x>=monitorScope.monitor.x && pos.x<monitorScope.monitor.x+monitorScope.monitor.width && pos.y>=monitorScope.monitor.y && pos.y<monitorScope.monitor.y+monitorScope.monitor.height
                     property int badgePhase:0
                     Timer {interval:280;repeat:true;running:placed.working && !root.chatOpen;onTriggered:placed.badgePhase=(placed.badgePhase+1)%3}
                     screen:monitorScope.monitor
-                    visible:!root.capturing && !!blob && pos.visible && pos.x>=monitorScope.monitor.x && pos.x<monitorScope.monitor.x+monitorScope.monitor.width && pos.y>=monitorScope.monitor.y && pos.y<monitorScope.monitor.y+monitorScope.monitor.height
+                    visible:!root.capturing && placed.onMonitor
                     anchors {top:true;left:true}
                     margins {top:Math.max(0,pos.y-monitorScope.monitor.y-8);left:Math.max(0,pos.x-monitorScope.monitor.x-8)}
                     implicitWidth:72;implicitHeight:72;color:"transparent";exclusionMode:ExclusionMode.Ignore
@@ -958,7 +959,7 @@ ShellRoot {
                         Text {anchors.centerIn:parent;text:"!";color:"#2b2a1f";font.pixelSize:11;font.bold:true}
                     }
                     DragArea {id:dropArea;blobId:placed.modelData}
-                    ChatBubble {blob:placed.blob;monitor:monitorScope.monitor;place:placed.pos;hostVisible:placed.visible}
+                    ChatBubble {blob:placed.blob;monitor:monitorScope.monitor;place:placed.pos;hostVisible:placed.onMonitor}
                 }
             }
         }
