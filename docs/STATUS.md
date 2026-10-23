@@ -1,0 +1,33 @@
+# Implementation and validation status
+
+This is the initial Drops build. The feature inventory below separates code from checks that require an actual desktop or model endpoint.
+
+## Implemented
+
+- Six Rust workspace crates following the spec's boundaries.
+- OpenAI-compatible Chat Completions, SSE text/reasoning/usage and fragmented indexed tool calls, omitted tool IDs and non-streaming fallback.
+- Agent continuation, malformed-call recovery, project-scoped file read/write/edit, gated shell and external stdio tools, markdown instructions/skills, JSONL sessions.
+- NDJSON Unix socket daemon, private socket, CLI/Waybar state, persistent blob metadata, up to three independent sessions, clear/export/fork, per-tool approvals and cancellation.
+- Hyprland queries, hit testing, window/workspace anchors, reconnecting socket2 updates, persisted decoration offsets and context with window geometry and process metadata.
+- Minimal QML panel: avatar and chat field, closes on placement; placed drops open contextual conversations. Stable surface identity during streaming, exact approval cards, context inspection via the anchor label, and a stop control.
+- TOML provider selection, anchor rules and external executable declarations; local install script, one-click launcher and example Waybar configuration.
+
+## Executed verification
+
+- 201 Rust tests pass: 78 agent, 45 provider, 69 anchor, 9 daemon/recovery.
+- Workspace Clippy passes with `-D warnings`; formatting is clean.
+- Failure-path integration verifies same-bridge cancellation during slow capture, pending-session fences, disk-save recovery, startup anchor refresh, retained offsets, graceful external-tool shutdown and strict-endpoint continuation after interrupted calls.
+- Headless integration passes streaming tool continuation, exact approval gating, denial, cancellation during approval, busy-session guards, file changes, context inspection, export/fork/clear, blob cap, malformed IPC, restart persistence and socket permissions.
+- Live Hyprland integration passes real window attachment, connected UI load, workspace hide/return, floating-window movement, and close fallback, using only a disposable Foot terminal.
+- Offscreen populated QML checks validate controls and preserve chat delegates and blob surface identity during streaming.
+- Release installer was executed into an isolated prefix with private config permissions, executable example tool and working CLI. The installed one-click launcher starts the daemon/UI once and toggles the panel on successive clicks. No global config was overwritten.
+
+## Validation limits
+
+Real Ollama/llama-server/hosted SSE recordings are not claimed: provider fixtures are synthetic compatibility fixtures. Two live endpoint implementations must still be checked to close milestone 1 exactly as written.
+
+The video session was restored during implementation. The actual `ui/shell.qml` then loaded successfully on Hyprland with the Wayland backend (`Configuration Loaded`, no runtime QML errors). Offscreen checks also load the controls using a substitute window surface. A disposable Foot terminal also passed live hit-testing, socket2 workspace hide/return and window-close fallback, with the UI connected. Actual pointer dragging, multi-monitor mapping and fractional scaling still require interactive validation.
+
+Screenshot/vision workflows and browser/editor/terminal output adapters remain later work. Generic process metadata does not expose a terminal's scrollback or a browser page's text. Colors, size and roundness are configured in `[appearance]`; automatic Omarchy theme tracking remains follow-up work. Per-tool permission overrides and richer anchor-scoped tool lists also remain follow-up work; the initial policy is deliberately fixed: core file mutations and shell commands require approval.
+
+A five-second debug-build sample with one real window drop measured 0.20% of one CPU core and 13.4 MiB daemon RSS. This excludes Quickshell memory and is not a full performance benchmark. Window geometry is checked every 200 ms through the control socket only while window drops exist; workspace-only sessions do no geometry IPC. The five-minute onboarding and ten-minute external-tool onboarding targets have not been measured.

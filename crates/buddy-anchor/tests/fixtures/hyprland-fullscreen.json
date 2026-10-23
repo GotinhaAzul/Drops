@@ -1,0 +1,70 @@
+{
+  "monitors": [
+    {
+      "id": 0,
+      "name": "eDP-1",
+      "width": 1920,
+      "height": 1080,
+      "x": 0,
+      "y": 0,
+      "scale": 1.0,
+      "focused": true,
+      "disabled": false,
+      "activeWorkspace": { "id": 1, "name": "1" },
+      "specialWorkspace": { "id": 0, "name": "" }
+    }
+  ],
+  "workspaces": [
+    {
+      "id": 1,
+      "name": "1",
+      "monitor": "eDP-1",
+      "monitorID": 0,
+      "windows": 2,
+      "hasfullscreen": true,
+      "focused": true,
+      "lastwindow": "0x9001",
+      "lastwindowtitle": "Fullscreen"
+    }
+  ],
+  "clients": [
+    {
+      "address": "0x9001",
+      "mapped": true,
+      "hidden": false,
+      "at": [0, 0],
+      "size": [1920, 1080],
+      "workspace": { "id": 1, "name": "1" },
+      "floating": false,
+      "pinned": false,
+      "fullscreen": 2,
+      "monitor": 0,
+      "class": "chromium",
+      "initialClass": "chromium",
+      "title": "Fullscreen",
+      "initialTitle": "Fullscreen",
+      "pid": 901,
+      "xwayland": false,
+      "focusHistoryID": 3
+    },
+    {
+      "address": "0x9002",
+      "mapped": true,
+      "hidden": false,
+      "at": [100, 100],
+      "size": [400, 300],
+      "workspace": { "id": 1, "name": "1" },
+      "floating": true,
+      "pinned": false,
+      "fullscreen": 0,
+      "monitor": 0,
+      "class": "mpv",
+      "initialClass": "mpv",
+      "title": "video",
+      "initialTitle": "video",
+      "pid": 902,
+      "xwayland": false,
+      "focusHistoryID": 0
+    }
+  ]
+}

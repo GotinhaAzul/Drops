@@ -1,0 +1,19 @@
+[package]
+name = "buddy-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Buddy/Drops agent engine: tool loop, approvals, JSONL sessions"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+buddy-ai.workspace = true
+
+# Used only on Unix to kill a tool's whole process group on cancellation.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

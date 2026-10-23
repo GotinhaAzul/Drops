@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# One-click launcher. Starts only Drops' own processes; changes no desktop config.
+set -euo pipefail
+umask 077
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$root/share/drops/ui/shell.qml" ]]; then
+  bin_dir="$root/bin"
+  shell_path="$root/share/drops/ui/shell.qml"
+else
+  bin_dir="$root/target/debug"
+  shell_path="$root/ui/shell.qml"
+fi
+mode="${1:-toggle}"
+if [[ "$mode" != toggle && "$mode" != start ]]; then printf 'Usage: drops [toggle|start]\n' >&2; exit 2; fi
+if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then printf 'Run Drops from your Hyprland session.\n' >&2; exit 1; fi
+if [[ -z "${XDG_RUNTIME_DIR:-}" && -z "${DROPS_SOCKET:-}" ]]; then printf 'Set XDG_RUNTIME_DIR or a private DROPS_SOCKET path.\n' >&2; exit 1; fi
+runtime="${XDG_RUNTIME_DIR:-$(dirname -- "${DROPS_SOCKET}")}"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/drops"
+mkdir -p "$state_dir"
+exec 9>"$runtime/drops-launch.lock"
+flock -x 9
+if ! "$bin_dir/buddyctl" status >/dev/null 2>&1; then
+  nohup "$bin_dir/buddyd" >>"$state_dir/daemon.log" 2>&1 9>&- &
+  printf '%s\n' "$!" >"$state_dir/daemon.pid"
+  ready=false
+  for _ in {1..40}; do
+    if "$bin_dir/buddyctl" status >/dev/null 2>&1; then ready=true; break; fi
+    sleep 0.1
+  done
+  if [[ "$ready" != true ]]; then printf 'Drops could not start. Check %s/daemon.log and your provider config.\n' "$state_dir" >&2; exit 1; fi
+fi
+export DROPS_CTL="$bin_dir/buddyctl"
+quickshell --no-duplicate --daemonize -p "$shell_path" >>"$state_dir/ui.log" 2>&1 9>&-
+if [[ "$mode" == toggle ]]; then "$bin_dir/buddyctl" toggle >/dev/null; fi

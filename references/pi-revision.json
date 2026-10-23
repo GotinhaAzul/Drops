@@ -1,0 +1,101 @@
+{
+  "sha": "3953e9ef497024d13c6f4aa646d0adda2e37b0f8",
+  "node_id": "C_kwDOPbFNk9oAKDM5NTNlOWVmNDk3MDI0ZDEzYzZmNGFhNjQ2ZDBhZGRhMmUzN2IwZjg",
+  "commit": {
+    "author": {
+      "name": "yzchen",
+      "email": "yzchen_space@163.com",
+      "date": "2026-08-13T04:17:37Z"
+    },
+    "committer": {
+      "name": "Petr Houška",
+      "email": "houskape@gmail.com",
+      "date": "2026-10-23T18:20:02Z"
+    },
+    "message": "fix(examples): todo renderResult returns undefined on validation errors\n\nWhen a todo call fails schema validation, createErrorToolResult produces\ndetails: {} (a truthy empty object), so renderResult skips both the\n!details and details.error branches, then switch (details.action) has no\ndefault and returns undefined. ToolExecutionComponent.updateDisplay()\nthen calls addChild(undefined), and the next Box.render pass crashes the\nwhole interactive TUI.\n\nAdd a default case that renders the validation error text.",
+    "tree": {
+      "sha": "22bdf9673d849c7f44c70df95fc9af8d20dbb0fa",
+      "url": "https://api.github.com/repos/earendil-works/pi/git/trees/22bdf9673d849c7f44c70df95fc9af8d20dbb0fa"
+    },
+    "url": "https://api.github.com/repos/earendil-works/pi/git/commits/3953e9ef497024d13c6f4aa646d0adda2e37b0f8",
+    "comment_count": 0,
+    "verification": {
+      "verified": false,
+      "reason": "unsigned",
+      "signature": null,
+      "payload": null,
+      "verified_at": null
+    }
+  },
+  "url": "https://api.github.com/repos/earendil-works/pi/commits/3953e9ef497024d13c6f4aa646d0adda2e37b0f8",
+  "html_url": "https://github.com/earendil-works/pi/commit/3953e9ef497024d13c6f4aa646d0adda2e37b0f8",
+  "comments_url": "https://api.github.com/repos/earendil-works/pi/commits/3953e9ef497024d13c6f4aa646d0adda2e37b0f8/comments",
+  "author": {
+    "login": "cyzlmh",
+    "id": 24603258,
+    "node_id": "MDQ6VXNlcjI0NjAzMjU4",
+    "avatar_url": "https://avatars.githubusercontent.com/u/24603258?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/cyzlmh",
+    "html_url": "https://github.com/cyzlmh",
+    "followers_url": "https://api.github.com/users/cyzlmh/followers",
+    "following_url": "https://api.github.com/users/cyzlmh/following{/other_user}",
+    "gists_url": "https://api.github.com/users/cyzlmh/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/cyzlmh/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/cyzlmh/subscriptions",
+    "organizations_url": "https://api.github.com/users/cyzlmh/orgs",
+    "repos_url": "https://api.github.com/users/cyzlmh/repos",
+    "events_url": "https://api.github.com/users/cyzlmh/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/cyzlmh/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "committer": {
+    "login": "petrroll",
+    "id": 1764721,
+    "node_id": "MDQ6VXNlcjE3NjQ3MjE=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1764721?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/petrroll",
+    "html_url": "https://github.com/petrroll",
+    "followers_url": "https://api.github.com/users/petrroll/followers",
+    "following_url": "https://api.github.com/users/petrroll/following{/other_user}",
+    "gists_url": "https://api.github.com/users/petrroll/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/petrroll/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/petrroll/subscriptions",
+    "organizations_url": "https://api.github.com/users/petrroll/orgs",
+    "repos_url": "https://api.github.com/users/petrroll/repos",
+    "events_url": "https://api.github.com/users/petrroll/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/petrroll/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "parents": [
+    {
+      "sha": "c55972086d5642593c19c331f9c4eaf02054c530",
+      "url": "https://api.github.com/repos/earendil-works/pi/commits/c55972086d5642593c19c331f9c4eaf02054c530",
+      "html_url": "https://github.com/earendil-works/pi/commit/c55972086d5642593c19c331f9c4eaf02054c530"
+    }
+  ],
+  "stats": {
+    "total": 7,
+    "additions": 7,
+    "deletions": 0
+  },
+  "files": [
+    {
+      "sha": "71b7aae879c56aec68a3f8daf02a6f7a60c618b5",
+      "filename": "packages/coding-agent/examples/extensions/todo.ts",
+      "status": "modified",
+      "additions": 7,
+      "deletions": 0,
+      "changes": 7,
+      "blob_url": "https://github.com/earendil-works/pi/blob/3953e9ef497024d13c6f4aa646d0adda2e37b0f8/packages%2Fcoding-agent%2Fexamples%2Fextensions%2Ftodo.ts",
+      "raw_url": "https://github.com/earendil-works/pi/raw/3953e9ef497024d13c6f4aa646d0adda2e37b0f8/packages%2Fcoding-agent%2Fexamples%2Fextensions%2Ftodo.ts",
+      "contents_url": "https://api.github.com/repos/earendil-works/pi/contents/packages%2Fcoding-agent%2Fexamples%2Fextensions%2Ftodo.ts?ref=3953e9ef497024d13c6f4aa646d0adda2e37b0f8",
+      "patch": "@@ -276,6 +276,13 @@ export default function (pi: ExtensionAPI) {\n \n \t\t\t\tcase \"clear\":\n \t\t\t\t\treturn new Text(theme.fg(\"success\", \"✓ \") + theme.fg(\"muted\", \"Cleared all todos\"), 0, 0);\n+\n+\t\t\t\tdefault:\n+\t\t\t\t\treturn new Text(\n+\t\t\t\t\t\tresult.content[0]?.type === \"text\" ? theme.fg(\"error\", result.content[0].text) : \"\",\n+\t\t\t\t\t\t0,\n+\t\t\t\t\t\t0,\n+\t\t\t\t\t);\n \t\t\t}\n \t\t},\n \t});"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "custom/drops": {
+    "exec": "buddyctl status --waybar",
+    "return-type": "json",
+    "interval": 2,
+    "on-click": "drops toggle",
+    "tooltip": true
+  }
+}

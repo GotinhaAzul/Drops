@@ -1,0 +1,6 @@
+#custom-drops { color: #c2e6a0; padding: 0 10px; }
+#custom-drops.thinking { color: #a8c7fa; }
+#custom-drops.waiting { color: #eed29b; }
+#custom-drops.offline { color: #777777; }
+
+#custom-drops.error { color: #f4a99a; }
