@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix="drops-qml-bubble-") as directory:
     calls=base/"calls.jsonl"
     fixture={
         "id":"fixture","appearance":"drop","state":"idle",
-        "placement":{"anchor":{"kind":"window","address":"0x1"},"x":420,"y":620,"visible":True,"label":"btop — DesktopServer"},
+        "placement":{"anchor":{"kind":"window","address":"0x1"},"x":420,"y":420,"visible":True,"label":"btop — DesktopServer"},
         "context":{"kind":"window","window":{"class":"Alacritty","title":"btop"},"content":{"status":"captured","text":"load average: 0.21, 0.30, 0.35"}},
         "history":[],"approval":None,
     }
