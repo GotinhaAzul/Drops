@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use buddy_anchor::capture::{enrich, CaptureConfig};
+use buddy_anchor::capture::{enrich, full_text, CaptureConfig};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, MutexGuard};
 use tokio_util::sync::CancellationToken;
@@ -237,6 +237,92 @@ async fn mock_helper_text_is_bounded_and_vision_gated() {
     assert!(input.contains("\"terminal\":true"), "{input}");
 
     let _ = fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn full_text_uses_the_deep_helper_budget_and_bypasses_the_preview_limit() {
+    // full_text performs a live compositor lock check before reading text.
+    // Never run that against the owner's real desktop; the helper plumbing is
+    // covered here only on a headless host.
+    if buddy_anchor::desktop_available().is_ok() {
+        return;
+    }
+    let _guard = env_guard().await;
+    let dir = temp_dir("full-text");
+    let input_path = dir.join("helper-input.json");
+    let script_path = dir.join("mock-python");
+    let helper_json = r#"{"sources":[{"kind":"accessibility","scope":"matched-window","text":"0123456789abcdefghijABCDEFGHIJ"},{"kind":"tmux","scope":"terminal-scrollback","text":"scrollback beyond the preview"}],"warnings":["fixture note"]}"#;
+    let script = format!(
+        "#!/bin/sh\ncat > \"{}\"\nprintf '%s\\n' '{}'\n",
+        input_path.display(),
+        helper_json
+    );
+    fs::write(&script_path, script).expect("write mock helper");
+    let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script_path, permissions).expect("chmod mock helper");
+    std::env::set_var("DROPS_CAPTURE_PYTHON", &script_path);
+
+    let config = CaptureConfig {
+        max_text_chars: 8,
+        full_max_text_chars: 200,
+        full_max_nodes: 1234,
+        full_max_depth: 12,
+        full_budget_ms: 250,
+        full_timeout_ms: 2_000,
+        ..CaptureConfig::default()
+    };
+    let mut context = window_context();
+    context["screen_locked"] = json!(false);
+
+    let result = full_text(&context, &config, CancellationToken::new())
+        .await
+        .expect("full text");
+
+    std::env::remove_var("DROPS_CAPTURE_PYTHON");
+
+    assert_eq!(result.text.chars().count(), result.chars);
+    assert!(result.chars > config.max_text_chars);
+    assert!(result.text.contains("scrollback beyond the preview"));
+    assert!(!result.truncated);
+    assert_eq!(result.sources.len(), 2);
+    assert_eq!(result.sources[0]["kind"], "accessibility");
+    assert_eq!(result.sources[0]["chars"], 30);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.starts_with("text_helper: fixture note")));
+
+    let input = fs::read_to_string(&input_path).expect("helper stdin");
+    assert!(!input.contains("\"content\""), "{input}");
+    assert!(input.contains("\"max_text_chars\":200"), "{input}");
+    assert!(input.contains("\"max_nodes\":1234"), "{input}");
+    assert!(input.contains("\"max_depth\":12"), "{input}");
+    assert!(input.contains("\"budget_ms\":250"), "{input}");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn full_text_refuses_non_window_and_disabled_contexts() {
+    let context = json!({"kind": "workspace", "workspace": {"id": 1}});
+    assert!(full_text(
+        &context,
+        &CaptureConfig::default(),
+        CancellationToken::new()
+    )
+    .await
+    .is_err());
+
+    let disabled = CaptureConfig {
+        full_text: false,
+        ..CaptureConfig::default()
+    };
+    assert!(
+        full_text(&window_context(), &disabled, CancellationToken::new())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

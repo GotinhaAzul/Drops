@@ -510,19 +510,28 @@ class CaptureOptionsTests(unittest.TestCase):
                 "accessibility": "yes",
                 "terminal": 1,
                 "max_text_chars": capture_text.HARD_MAX_TEXT_CHARS + 1,
+                "max_nodes": capture_text.HARD_MAX_NODES + 1,
+                "max_depth": capture_text.HARD_MAX_DEPTH + 1,
+                "budget_ms": capture_text.HARD_MAX_BUDGET_MS + 1,
             }
         )
         self.assertTrue(options.accessibility)
         self.assertTrue(options.terminal)
         self.assertEqual(options.max_text_chars, capture_text.HARD_MAX_TEXT_CHARS)
+        self.assertEqual(options.max_nodes, capture_text.HARD_MAX_NODES)
+        self.assertEqual(options.max_depth, capture_text.HARD_MAX_DEPTH)
+        self.assertEqual(options.budget_ms, capture_text.HARD_MAX_BUDGET_MS)
         self.assertTrue(any("not a boolean" in warning for warning in warnings))
         self.assertTrue(any("clamped" in warning for warning in warnings))
 
         options, warnings = capture_text.parse_capture_options(
-            {"max_text_chars": 0}
+            {"max_text_chars": 0, "max_nodes": "lots", "max_depth": -1}
         )
         self.assertIsNone(options.max_text_chars)
+        self.assertIsNone(options.max_nodes)
+        self.assertIsNone(options.max_depth)
         self.assertTrue(any("must be positive" in warning for warning in warnings))
+        self.assertTrue(any("not an integer" in warning for warning in warnings))
 
         options, warnings = capture_text.parse_capture_options(
             {"max_text_chars": "lots"}
@@ -533,6 +542,40 @@ class CaptureOptionsTests(unittest.TestCase):
         options, warnings = capture_text.parse_capture_options("not an object")
         self.assertEqual(options, capture_text.CaptureOptions())
         self.assertTrue(any("not an object" in warning for warning in warnings))
+
+    def test_deep_options_change_nodes_depth_and_budget(self) -> None:
+        frame = make_frame(
+            "Deep Options Window",
+            [FakeNode(role="text", text="deep text")],
+            pid=42,
+        )
+        backend = FakeBackend([make_app(42, [frame])])
+        context = make_window(42, "Deep Options Window")
+        context["capture_options"] = {
+            "max_text_chars": 100,
+            "max_nodes": 10,
+            "max_depth": 3,
+            "budget_ms": 900,
+        }
+
+        with mock.patch.object(capture_text, "capture_tmux") as tmux:
+            result = capture_text.run_capture(
+                context, backend=backend, enable_tmux=False
+            )
+
+        self.assertEqual(source_text(result), "deep text")
+        tmux.assert_not_called()
+
+        limits = capture_text._apply_capture_options(
+            capture_text.DEFAULT_LIMITS,
+            capture_text.CaptureOptions(
+                max_nodes=10, max_depth=3, budget_ms=900
+            ),
+        )
+        self.assertEqual(limits.max_nodes, 10)
+        self.assertEqual(limits.max_depth, 3)
+        self.assertAlmostEqual(limits.total_budget_s, 0.9)
+        self.assertAlmostEqual(limits.accessibility_budget_s, 0.9)
 
     def test_absent_options_keep_the_defaults(self) -> None:
         options, warnings = capture_text.parse_capture_options(None)

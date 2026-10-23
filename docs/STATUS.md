@@ -9,6 +9,7 @@ This is the initial Drops build. The feature inventory below separates code from
 - Agent continuation, malformed-call recovery, project-scoped file read/write/edit, gated shell and external stdio tools, markdown instructions/skills, JSONL sessions.
 - NDJSON Unix socket daemon, private socket, CLI/Waybar state, persistent blob metadata, up to three independent sessions, clear/export/fork, per-tool approvals and cancellation.
 - Hyprland queries, hit testing, window/workspace anchors, reconnecting socket2 updates, persisted decoration offsets and context with window geometry and process metadata.
+- Window content capture sends a bounded preview; a read-only `window_content` tool can search or page through a larger accessibility/terminal capture on demand, cached per turn.
 - Native Omarchy top-bar widget with explicit create/delete controls, per-drop Drop/Cat/Sprout appearances, endpoint/model setup, and smooth pointer-following drag animations.
 - Minimal QML panel: avatar and chat field, closes on placement; placed drops open contextual conversations. Stable surface identity during streaming, exact approval cards, context inspection via the anchor label, and a stop control.
 - Thinking-model reasoning is shown as one collapsed, expandable block with a bounded scroll area; `[appearance].thinking_mode` hides it or expands it by default.
@@ -16,10 +17,11 @@ This is the initial Drops build. The feature inventory below separates code from
 
 ## Executed verification
 
-- 239 Rust tests pass, plus 34 Python text-capture checks. Capture covers lock refusal, geometry/occlusion, bounded subprocesses, image gating, multimodal recovery and state scrubbing.
+- 257 Rust tests pass, plus 35 Python text-capture checks and a fake-compositor window-content smoke test. Capture covers lock refusal, geometry/occlusion, bounded subprocesses, image gating, multimodal recovery, on-demand full text, window identity checks and state scrubbing.
 - Workspace Clippy passes with `-D warnings`; formatting is clean.
 - Failure-path integration verifies same-bridge cancellation during slow capture, pending-session fences, disk-save recovery, startup anchor refresh, retained offsets, graceful external-tool shutdown and strict-endpoint continuation after interrupted calls.
 - Headless integration passes streaming tool continuation, exact approval gating, denial, cancellation during approval, busy-session guards, file changes, context inspection, export/fork/clear, blob cap, malformed IPC, restart persistence and socket permissions.
+- Fake-compositor integration passes on-demand window content: the window_content tool is advertised, deep capture receives the raised limits, one deep capture is reused across search/read, and results return to the model without touching a real window.
 - Live Hyprland integration passes real window attachment, connected UI load, workspace hide/return, floating-window movement, and automatic deletion when an attached window closes, using only a disposable Foot terminal.
 - Offscreen populated QML checks validate controls and preserve chat delegates and blob surface identity during streaming. Additional interaction checks exercise real create/style/delete controls, endpoint form submission, close-on-drop and non-instant drag interpolation. A reasoning-specific check verifies the collapsed default, bounded expansion, and zero-height hiding.
 - Widget integration tests cover first-run setup without a config, endpoint validation and private persistence, appearance persistence, draft placement, and deletion while a turn is awaiting approval.

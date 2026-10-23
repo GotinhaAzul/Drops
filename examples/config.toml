@@ -43,6 +43,8 @@ max_tokens_param = "max_tokens"
 
 # Window content is refreshed when a message is sent.
 # Enable provider vision above only when the model accepts images.
+# The request carries a bounded preview; the agent can call the read-only
+# `window_content` tool for a larger on-demand capture of the same window.
 # [capture]
 # enabled = true
 # accessibility = true
@@ -52,3 +54,9 @@ max_tokens_param = "max_tokens"
 # max_text_chars = 24000
 # max_image_edge = 1280
 # timeout_ms = 2500
+# full_text = true
+# full_max_text_chars = 500000
+# full_max_nodes = 50000
+# full_max_depth = 120
+# full_budget_ms = 8000
+# full_timeout_ms = 12000

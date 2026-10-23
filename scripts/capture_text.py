@@ -76,6 +76,11 @@ DEFAULT_LIMITS = Limits()
 # Match the Rust CaptureConfig hard cap.  The default remains 24 000; this is
 # only the upper bound for an explicit capture_options.max_text_chars.
 HARD_MAX_TEXT_CHARS = 1_000_000
+# Bounds for an explicit on-demand full capture.  They are deliberately far
+# above the interactive preview defaults but still finite.
+HARD_MAX_NODES = 200_000
+HARD_MAX_DEPTH = 512
+HARD_MAX_BUDGET_MS = 30_000
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,9 @@ class CaptureOptions:
     accessibility: bool = True
     terminal: bool = True
     max_text_chars: Optional[int] = None
+    max_nodes: Optional[int] = None
+    max_depth: Optional[int] = None
+    budget_ms: Optional[int] = None
 
 # Roles whose accessible name is useful as content when no Text interface is
 # exposed.  Buttons and menu chrome are deliberately absent: the helper is for
@@ -360,9 +368,9 @@ def _coerce_pid(value: Any) -> Optional[int]:
 def parse_capture_options(raw: Any) -> tuple[CaptureOptions, list[str]]:
     """Parse the optional bounded ``capture_options`` object.
 
-    Invalid values fall back to defaults instead of failing the capture.  The
-    character limit is clamped to [1, HARD_MAX_TEXT_CHARS] to keep a bad
-    config from producing an unbounded AT-SPI read.
+    Invalid values fall back to defaults instead of failing the capture.  Every
+    numeric limit is clamped to a hard bound so a bad config cannot produce an
+    unbounded AT-SPI read or helper run.
     """
     warnings: list[str] = []
     if raw is None:
@@ -374,7 +382,6 @@ def parse_capture_options(raw: Any) -> tuple[CaptureOptions, list[str]]:
 
     accessibility = True
     terminal = True
-    max_text_chars: Optional[int] = None
 
     value = raw.get("accessibility")
     if isinstance(value, bool):
@@ -392,39 +399,58 @@ def parse_capture_options(raw: Any) -> tuple[CaptureOptions, list[str]]:
             "capture_options.terminal is not a boolean; using the default"
         )
 
-    value = raw.get("max_text_chars")
-    if value is not None:
+    def positive_int(name: str, hard_max: int) -> Optional[int]:
+        value = raw.get(name)
+        if value is None:
+            return None
         if isinstance(value, bool) or not isinstance(value, int):
             warnings.append(
-                "capture_options.max_text_chars is not an integer; using the default"
+                f"capture_options.{name} is not an integer; using the default"
             )
-        elif value <= 0:
+            return None
+        if value <= 0:
             warnings.append(
-                "capture_options.max_text_chars must be positive; using the default"
+                f"capture_options.{name} must be positive; using the default"
             )
-        elif value > HARD_MAX_TEXT_CHARS:
-            max_text_chars = HARD_MAX_TEXT_CHARS
+            return None
+        if value > hard_max:
             warnings.append(
-                "capture_options.max_text_chars was clamped to "
-                f"{HARD_MAX_TEXT_CHARS} characters"
+                f"capture_options.{name} was clamped to {hard_max}"
             )
-        else:
-            max_text_chars = value
+            return hard_max
+        return value
 
     return (
         CaptureOptions(
             accessibility=accessibility,
             terminal=terminal,
-            max_text_chars=max_text_chars,
+            max_text_chars=positive_int("max_text_chars", HARD_MAX_TEXT_CHARS),
+            max_nodes=positive_int("max_nodes", HARD_MAX_NODES),
+            max_depth=positive_int("max_depth", HARD_MAX_DEPTH),
+            budget_ms=positive_int("budget_ms", HARD_MAX_BUDGET_MS),
         ),
         warnings,
     )
 
 
 def _apply_capture_options(limits: Limits, options: CaptureOptions) -> Limits:
-    if options.max_text_chars is None:
+    changes: dict[str, Any] = {}
+    if options.max_text_chars is not None:
+        changes["max_text_chars"] = options.max_text_chars
+    if options.max_nodes is not None:
+        changes["max_nodes"] = options.max_nodes
+    if options.max_depth is not None:
+        changes["max_depth"] = options.max_depth
+    if options.budget_ms is not None:
+        total_budget = options.budget_ms / 1000.0
+        changes["total_budget_s"] = total_budget
+        changes["accessibility_budget_s"] = min(
+            total_budget,
+            max(limits.accessibility_budget_s, total_budget - limits.tmux_budget_s),
+        )
+    if not changes:
         return limits
-    return replace(limits, max_text_chars=options.max_text_chars)
+    return replace(limits, **changes)
 
 
 def select_window(
@@ -1066,7 +1092,6 @@ def run_capture(
     and the Atspi GI module is loaded lazily.
     """
     started = time.monotonic() if start is None else start
-    deadline = started + limits.total_budget_s
     warnings: list[str] = []
     sources: list[dict[str, Any]] = []
 
@@ -1091,6 +1116,7 @@ def run_capture(
     )
     warnings.extend(option_warnings)
     limits = _apply_capture_options(limits, options)
+    deadline = started + limits.total_budget_s
 
     if options.accessibility and backend is None:
         atspi, load_warning = _load_atspi()

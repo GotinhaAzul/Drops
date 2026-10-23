@@ -22,7 +22,10 @@ mod session;
 pub(crate) mod testutil;
 mod tools;
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -48,6 +51,66 @@ pub struct AgentConfig {
     pub instructions: String,
     pub max_turns: usize,
     pub external_tools: Vec<ExternalTool>,
+    /// Tools supplied by the desktop layer for this run only.
+    ///
+    /// The daemon uses this to expose state that the engine must not depend on,
+    /// such as access to the full captured text of the anchored window.
+    /// Context tools never shadow built-ins, and an unknown risk is treated as
+    /// dangerous.
+    pub context_tools: Vec<ContextTool>,
+}
+
+/// A tool implemented by the caller instead of the engine.
+///
+/// `handler` runs inside the regular tool loop, receives the parsed model
+/// arguments and the turn's cancellation token, and returns the text result
+/// shown to the model. An `Err` becomes a tool error result; it never aborts
+/// the turn. Handlers must be self-contained and bounded: the agent cannot
+/// enforce a timeout on code it does not own.
+#[derive(Clone)]
+pub struct ContextTool {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+    pub risk: String,
+    pub handler: Arc<dyn ContextToolHandler>,
+}
+
+impl std::fmt::Debug for ContextTool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ContextTool")
+            .field("name", &self.name)
+            .field("risk", &self.risk)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ContextTool {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+        risk: impl Into<String>,
+        handler: Arc<dyn ContextToolHandler>,
+    ) -> Self {
+        ContextTool {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+            risk: risk.into(),
+            handler,
+        }
+    }
+}
+
+/// Async implementation of one [`ContextTool`].
+pub trait ContextToolHandler: Send + Sync {
+    fn call<'a>(
+        &'a self,
+        arguments: &'a Value,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
 }
 
 /// A user-configured executable that speaks the external tool protocol.
@@ -155,6 +218,7 @@ pub async fn run(
     let registry = ToolRegistry::new(
         root.clone(),
         allow_shell,
+        config.context_tools.clone(),
         config.external_tools.clone(),
         skills.clone(),
     );
@@ -534,6 +598,7 @@ mod tests {
             instructions: "Test instructions.".into(),
             max_turns,
             external_tools: Vec::new(),
+            context_tools: Vec::new(),
         };
         (temp, config)
     }
@@ -725,6 +790,71 @@ mod tests {
         assert_eq!(messages[2]["tool_calls"][0]["id"], "c1");
         assert_eq!(messages[3]["tool_call_id"], "c1");
         assert_eq!(messages.last().unwrap()["content"], "done");
+    }
+
+    #[tokio::test]
+    async fn context_tool_is_advertised_and_runs_without_approval() {
+        let (_temp, mut config) = setup(3);
+        struct Handler;
+        impl crate::ContextToolHandler for Handler {
+            fn call<'a>(
+                &'a self,
+                arguments: &'a Value,
+                _cancel: &'a CancellationToken,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>,
+            > {
+                Box::pin(async move { Ok(format!("full text for {arguments}")) })
+            }
+        }
+        config.context_tools = vec![ContextTool::new(
+            "window_content",
+            "Read the full anchored window content.",
+            json!({"type":"object","properties":{"action":{"type":"string"}},"required":["action"]}),
+            "read-only",
+            std::sync::Arc::new(Handler),
+        )];
+
+        let mut turn = 0;
+        let _mock = test_support::install(move |_messages, tools| {
+            turn += 1;
+            match turn {
+                1 => {
+                    assert!(tools
+                        .iter()
+                        .any(|tool| tool["function"]["name"] == "window_content"));
+                    Ok(call("c1", "window_content", json!({"action":"read"})))
+                }
+                _ => Ok(text("done")),
+            }
+        });
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = mpsc::unbounded_channel();
+        run(
+            config,
+            "context-tool".into(),
+            "read more".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let events = drain(rx);
+        assert!(!event_types(&events).contains(&"approval"));
+        let result = events
+            .iter()
+            .find(|event| event["type"] == "tool_result")
+            .unwrap();
+        assert_eq!(result["is_error"], false);
+        assert!(result["text"]
+            .as_str()
+            .unwrap()
+            .contains("full text for {\"action\":\"read\"}"));
     }
 
     #[tokio::test]
