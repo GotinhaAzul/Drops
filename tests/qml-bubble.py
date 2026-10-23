@@ -75,6 +75,13 @@ for line in sys.stdin:
             const view=root.chatViews["fixture"]
             switch(root.testPhase){
             case 0:
+                {
+                    const guardA={label:"a"},guardB={label:"b"}
+                    root.registerChat("guard",guardA);root.registerChat("guard",guardB)
+                    root.unregisterChat("guard",guardA)
+                    console.log("TEST_GUARD",root.chatViews["guard"]===guardB)
+                    root.unregisterChat("guard",guardB)
+                }
                 if(root.state.panel_open || !root.selected)return
                 root.toggleChat("fixture");root.testPhase++;break
             case 1: {
@@ -111,6 +118,7 @@ for line in sys.stdin:
 '''
     source=source.replace("id: root","id: root\n"+harness,1)
     path=base/"shell.qml";path.write_text(source)
+    (base/"markdown.js").write_text((ROOT/"ui/markdown.js").read_text())
     result=subprocess.run(["quickshell","-p",str(path)],env=dict(os.environ,QT_QPA_PLATFORM="offscreen",DROPS_CTL=str(bridge)),capture_output=True,text=True,timeout=12)
     output=result.stdout+result.stderr
     assert "TEST_BUBBLE_DONE" in output and "TEST_FAILURE" not in output,output
@@ -120,6 +128,8 @@ for line in sys.stdin:
         match=re.search(rf"{name} (.+)$",output,re.M)
         assert match,name+"\n"+output
         return match.group(1).strip()
+
+    assert line("TEST_GUARD")=="true",output
 
     opened=line("TEST_OPEN").split()
     assert opened[0]=="true",output                 # bubble window visible

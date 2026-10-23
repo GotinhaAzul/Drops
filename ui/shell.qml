@@ -5,6 +5,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import "markdown.js" as Markdown
 
 ShellRoot {
     id: root
@@ -60,7 +61,16 @@ ShellRoot {
     property color background: appearance.background || "#20251f"
     property color ink: appearance.foreground || "#ecebe4"
     property color muted: appearance.muted || "#92968a"
+    property color codeInk: appearance.code || "#d8c9a3"
     property real blobSize: Math.max(20,Math.min(52,appearance.blob_size || 44))
+    function markdownOptions() {
+        return {
+            link: root.accent.toString(),
+            code: root.codeInk.toString(),
+            muted: root.muted.toString(),
+            border: "#4b5545"
+        }
+    }
     property string failure: ""
     property bool connected: false
     property bool dragging: false
@@ -579,15 +589,22 @@ ShellRoot {
                                 visible:shown
                                 height:shown ? implicitHeight : 0
                                 implicitHeight:thinking ? thought.implicitHeight : line.implicitHeight
-                                Label {
+                                Text {
                                     id:line
+                                    objectName:"chat-line-"+chatEntry.index
                                     visible:!chatEntry.thinking && chatEntry.shown
-                                    x:chatEntry.entry.type==="user" ? 22 : 0
-                                    width:parent.width-(chatEntry.entry.type==="user" ? 22 : 0)
-                                    wrapMode:Text.Wrap;textFormat:Text.PlainText;font.pixelSize:12
-                                    horizontalAlignment:chatEntry.entry.type==="user" ? Text.AlignRight : Text.AlignLeft
-                                    color:chatEntry.entry.type==="user" ? root.accent : chatEntry.entry.type==="error" ? "#f4a99a" : chatEntry.entry.type==="tool_start" ? root.muted : root.ink
-                                    text:chatEntry.entry.type==="tool_start" ? "↳ "+chatEntry.entry.name : chatEntry.entry.type==="user" ? chatEntry.entry.text : (chatEntry.entry.text || "")
+                                    readonly property bool assistant:chatEntry.entry.type==="text"
+                                    property bool user:chatEntry.entry.type==="user"
+                                    x:user ? 22 : 0
+                                    width:parent.width-(user ? 22 : 0)
+                                    wrapMode:assistant ? Text.WrapAtWordBoundaryOrAnywhere : Text.Wrap
+                                    textFormat:assistant ? Text.RichText : Text.PlainText
+                                    linkColor:root.accent
+                                    font.pixelSize:12
+                                    horizontalAlignment:user ? Text.AlignRight : Text.AlignLeft
+                                    color:user ? root.accent : chatEntry.entry.type==="error" ? "#f4a99a" : chatEntry.entry.type==="tool_start" ? root.muted : root.ink
+                                    text:assistant ? Markdown.render(String(chatEntry.entry.text || ""), root.markdownOptions()) : chatEntry.entry.type==="tool_start" ? "↳ "+chatEntry.entry.name : user ? chatEntry.entry.text : (chatEntry.entry.text || "")
+                                    onLinkActivated:link=>{if(/^https?:\/\//i.test(String(link)))Qt.openUrlExternally(String(link))}
                                 }
                                 ThinkingBlock {
                                     id:thought

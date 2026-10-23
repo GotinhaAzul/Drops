@@ -22,6 +22,8 @@ Click a placed drop to open its in-place chat bubble. It greets the anchored win
 
 Reasoning from thinking models streams into one compact, scrollable block instead of the chat itself: it starts collapsed with a word count, expands on click, and can be hidden or shown expanded by default with `[appearance].thinking_mode` (`"collapsed"`, `"hidden"`, or `"shown"`).
 
+Assistant replies render as safe rich text: Markdown headings, emphasis, lists, links, tables and fenced code, plus common LaTeX math (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`) as Unicode/HTML symbols. Raw HTML from a model is shown as text, and links only open http(s) URLs.
+
 `./install.sh` without the widget flag installs the standalone launcher only; run `drops` to toggle its panel. `PREFIX` overrides the install prefix. Existing Drops configuration is preserved; widget updates are backed up outside the plugin discovery directory. The optional Waybar example remains available. The installer makes no Hyprland, autostart, or systemd changes.
 
 For development, run `mise exec -- cargo build --workspace`, then `target/debug/buddyd` and `DROPS_CTL="$PWD/target/debug/buddyctl" quickshell -p ui/shell.qml`. Configuration files are optional; advanced settings such as `project_dir`, capabilities and external tools are illustrated in `examples/config.toml`.
@@ -66,6 +68,8 @@ python3 tests/smoke.py
 python3 tests/widget-smoke.py
 python3 tests/qml-interactions.py
 python3 tests/qml-bubble.py
+python3 tests/qml-markdown.py
+python3 tests/markdown-render.py
 python3 tests/failure-smoke.py
 python3 tests/window-content-smoke.py
 python3 tests/shutdown-smoke.py

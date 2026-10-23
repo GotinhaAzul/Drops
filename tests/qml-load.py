@@ -24,6 +24,7 @@ source = source.replace("id: root", 'id: root\nTimer { interval: 50; running: tr
 with tempfile.TemporaryDirectory(prefix="drops-qml-") as directory:
     path = pathlib.Path(directory) / "shell.qml"
     path.write_text(source)
+    (path.parent / "markdown.js").write_text((root / "ui/markdown.js").read_text())
     process = subprocess.Popen(["quickshell", "-p", str(path)], env=dict(os.environ, QT_QPA_PLATFORM="offscreen", DROPS_SOCKET=str(pathlib.Path(directory)/"absent.sock")), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         output, _ = process.communicate(timeout=3)
