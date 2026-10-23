@@ -153,13 +153,15 @@ impl StreamAccumulator {
                     self.role = Some(role.to_string());
                 }
             }
-            if let Some(content) = delta.get("content") {
-                self.consume_text(content, &mut events)?;
-            }
+            // Reasoning first: a non-streaming response can carry both fields in
+            // one message, and the UI should show the thought before the answer.
             if let Some(reasoning) =
                 first_present(delta, &["reasoning_content", "reasoning", "thinking"])
             {
                 self.consume_reasoning(reasoning, &mut events)?;
+            }
+            if let Some(content) = delta.get("content") {
+                self.consume_text(content, &mut events)?;
             }
             if let Some(tool_calls) = delta.get("tool_calls") {
                 self.consume_tool_calls(tool_calls)?;
@@ -242,6 +244,15 @@ impl StreamAccumulator {
         }
         if !wire_calls.is_empty() {
             message.insert("tool_calls".to_string(), Value::Array(wire_calls));
+        }
+        // Keep reasoning in the persisted message so restored and forked
+        // sessions can show it. `session::wire_message` strips it before the
+        // next provider request, so it never becomes model input.
+        if !self.reasoning.is_empty() {
+            message.insert(
+                "reasoning_content".to_string(),
+                Value::String(self.reasoning.clone()),
+            );
         }
 
         (Value::Object(message), events)
@@ -486,6 +497,36 @@ mod tests {
             })
             .collect();
         assert_eq!(thinking, "why not");
+
+        // Reasoning is part of the finalized assistant message so recovery and
+        // forked sessions keep it; the wire layer strips it again.
+        let (message, _) = accumulator.finalize();
+        assert_eq!(message["content"], "Hello");
+        assert_eq!(message["reasoning_content"], "why not");
+    }
+
+    #[test]
+    fn non_streaming_message_orders_reasoning_before_text() {
+        let mut accumulator = StreamAccumulator::new();
+        let events = accumulator
+            .apply(&json!({"choices":[{"index":0,"message":{
+                "role":"assistant",
+                "content":"answer",
+                "reasoning_content":"weigh options"
+            }}]}))
+            .expect("message");
+
+        assert_eq!(
+            events,
+            vec![
+                ProviderEvent::Thinking("weigh options".into()),
+                ProviderEvent::Text("answer".into()),
+            ]
+        );
+
+        let (message, _) = accumulator.finalize();
+        assert_eq!(message["reasoning_content"], "weigh options");
+        assert_eq!(message["content"], "answer");
     }
 
     #[test]

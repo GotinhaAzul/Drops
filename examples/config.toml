@@ -38,7 +38,8 @@ max_tokens_param = "max_tokens"
 # blob_size = 44
 # roundness = 0.43
 
-# thinking_mode = "collapsed" # "shown", "collapsed", or "hidden" (default)
+# Model reasoning appears as one compact block; click it to expand.
+# thinking_mode = "collapsed" # "shown", "collapsed" (default), or "hidden"
 
 # Window content is refreshed when a message is sent.
 # Enable provider vision above only when the model accepts images.

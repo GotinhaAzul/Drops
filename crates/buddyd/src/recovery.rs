@@ -186,8 +186,9 @@ fn text_of(content: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Reasoning text when the provider/log kept any. Providers currently stream
-/// thinking without persisting it, so this is often absent and never required.
+/// Reasoning text when the log kept any. Streamed reasoning is stored with the
+/// assistant message; older logs and providers that do not report it stay
+/// readable because the field is optional.
 fn thinking_of(message: &Value) -> Option<String> {
     ["reasoning_content", "reasoning", "thinking"]
         .iter()

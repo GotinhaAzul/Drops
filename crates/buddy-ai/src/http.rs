@@ -36,7 +36,8 @@ fn cancelled() -> anyhow::Error {
 }
 
 /// Perform one chat completion, streaming events and returning the finished
-/// assistant wire message (`role`, `content`, and `tool_calls` when present).
+/// assistant wire message (`role`, `content`, `reasoning_content` when the
+/// provider supplied reasoning, and `tool_calls` when present).
 ///
 /// Cancellation is checked before the request and while the body is read. A
 /// cancelled call returns a [`ProviderError::Cancelled`] error; use

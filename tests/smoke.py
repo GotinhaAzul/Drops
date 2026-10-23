@@ -32,7 +32,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         prompt = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
         filename = "cancelled.txt" if "cancel" in prompt else "denied.txt" if "deny" in prompt else "note.txt"
         tool = {"index": 0, "id": "call_smoke", "type": "function", "function": {"name": "write", "arguments": json.dumps({"path": filename, "content": "approved by smoke test\n"})}}
-        delta = {"content": "Hello from the mock endpoint."} if has_result else {"tool_calls": [tool]}
+        delta = {"content": "Hello from the mock endpoint.", "reasoning_content": "The file write succeeded."} if has_result else {"tool_calls": [tool]}
         events = [{"choices": [{"index": 0, "delta": delta, "finish_reason": None}]}, {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}]
         payload = "".join("data: " + json.dumps(e) + "\n\n" for e in events) + "data: [DONE]\n\n"
         self.send_response(200)
@@ -88,6 +88,12 @@ def main():
                 done = wait(lambda s: s["blobs"][0]["state"] == "idle")
                 assert (project / "note.txt").read_text() == "approved by smoke test\n"
                 assert "Hello from the mock endpoint." in json.dumps(done)
+                history = done["blobs"][0]["history"]
+                assert any(entry.get("type") == "thinking" and "write succeeded" in entry.get("text", "") for entry in history)
+                assert any(entry.get("type") == "text" and "Hello from the mock endpoint." in entry.get("text", "") for entry in history)
+                exported = ctl("export", blob)["jsonl"]
+                messages = [json.loads(line).get("message", {}) for line in exported.splitlines() if line.strip()]
+                assert any(message.get("reasoning_content") == "The file write succeeded." for message in messages)
                 assert len(requests) == 2
                 assert ctl("context", blob)["context"]["mode"] == "headless"
                 assert ctl("export", blob)["jsonl"]

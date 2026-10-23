@@ -262,3 +262,4 @@ max_tokens_param = "max_tokens"
 - Model settings accept a pasted endpoint URL and model name; API-key environment variables are optional.
 - Dragging displays a smoothly interpolated avatar with pickup and settle animations.
 - Closing an attached window deletes its drop; workspace drops are removed manually.
+- Reasoning starts collapsed to keep the small panel readable; it expands on click and can be hidden or expanded by default.

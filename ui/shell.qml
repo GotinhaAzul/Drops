@@ -61,8 +61,24 @@ ShellRoot {
     property string chatSession: ""
     property bool busy: !!selected && ["capturing","thinking","waiting","stopping"].includes(selected.state)
     ListModel { id: chatModel; dynamicRoles: true }
+    property var thinkingExpanded: ({})
+    property string thinkingMode: ["shown","collapsed","hidden"].includes(appearance.thinking_mode) ? appearance.thinking_mode : "collapsed"
+    function entryVisible(entry) {
+        if (!entry) return false
+        if (entry.type === "thinking") return root.thinkingMode !== "hidden" && String(entry.text || "").trim().length > 0
+        return ["user","text","error","tool_start","tool_result"].includes(entry.type)
+    }
+    function isThinkingExpanded(key) {
+        const value=root.thinkingExpanded[key]
+        return value===undefined ? root.thinkingMode==="shown" : !!value
+    }
+    function setThinkingExpanded(key,value) {
+        const next=Object.assign({},root.thinkingExpanded)
+        next[key]=!!value
+        root.thinkingExpanded=next
+    }
     function syncChat() {
-        if (chatSession !== selectedId) { chatModel.clear(); chatSession=selectedId }
+        if (chatSession !== selectedId) { chatModel.clear(); chatSession=selectedId; thinkingExpanded={}; chat.previousContentHeight=0 }
         const history = selected ? selected.history : []
         while (chatModel.count > history.length) chatModel.remove(chatModel.count-1)
         for (let i=0;i<history.length;i++) {
@@ -120,6 +136,56 @@ ShellRoot {
     Timer {id:recentTimer;interval:1100;onTriggered:root.recentDropId=""}
     Timer {interval:16;repeat:true;running:root.dragging;onTriggered:{if(!root.pointerPending){root.pointerPending=true;root.send({type:"pointer"})}}}
     Timer { interval:120; repeat:true; running:root.dragging; onTriggered:root.send({type:"preview",x:0,y:0,use_cursor:true}) }
+
+    component ThinkingBlock: Item {
+        id:block
+        property var entry: null
+        property bool expanded: false
+        property bool streaming: false
+        signal toggleRequested()
+        implicitHeight: header.height + (expanded ? 4 + body.height : 0)
+        height: implicitHeight
+        property string summary: {
+            if (streaming) return "Thinking…"
+            const text=String(entry && entry.text || "").trim()
+            if (!text) return "Thinking"
+            const words=text.split(/\s+/).filter(word=>word.length>0).length
+            if (words>1) return "Thinking · "+(words>=1000 ? (words/1000).toFixed(1)+"k words" : words+" words")
+            return "Thinking · "+(text.length>=1000 ? (text.length/1000).toFixed(1)+"k chars" : text.length+" chars")
+        }
+        Rectangle {
+            id:header
+            width:parent.width;height:20;radius:5
+            color:Qt.rgba(root.muted.r,root.muted.g,root.muted.b,0.10)
+            Accessible.role:Accessible.Button
+            Accessible.name:block.expanded ? "Collapse thinking" : "Expand thinking"
+            RowLayout {
+                anchors.fill:parent;anchors.leftMargin:6;anchors.rightMargin:6;spacing:5
+                Text {text:block.expanded ? "▾" : "▸";color:root.muted;font.pixelSize:9;Layout.alignment:Qt.AlignVCenter}
+                Text {text:block.summary;color:root.muted;font.pixelSize:10;Layout.fillWidth:true;elide:Text.ElideRight;Layout.alignment:Qt.AlignVCenter}
+            }
+            MouseArea {anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:block.toggleRequested()}
+        }
+        Rectangle {
+            id:body
+            visible:block.expanded
+            y:header.height+4;width:parent.width
+            height:Math.min(thought.implicitHeight+12,132)
+            radius:6;color:Qt.rgba(root.muted.r,root.muted.g,root.muted.b,0.06);clip:true
+            Flickable {
+                id:thoughtScroll
+                anchors.fill:parent;anchors.margins:6
+                contentWidth:width;contentHeight:thought.implicitHeight
+                clip:true;boundsBehavior:Flickable.StopAtBounds
+                Text {
+                    id:thought
+                    width:thoughtScroll.width
+                    wrapMode:Text.Wrap;textFormat:Text.PlainText;font.pixelSize:11;color:root.ink
+                    text:String(block.entry && block.entry.text || "")
+                }
+            }
+        }
+    }
 
     component DropFace: Rectangle {
         property bool awake:true
@@ -223,22 +289,47 @@ ShellRoot {
                 ScrollView {
                     id:chat;visible:!!root.selected && root.selected.history.length>0
                     Layout.fillWidth:true;Layout.preferredHeight:142;clip:true;contentWidth:availableWidth
+                    property real previousContentHeight:0
                     Column {
                         width:chat.availableWidth;spacing:7
                         Repeater {
                             model:chatModel
-                            delegate:Label {
+                            delegate:Item {
+                                id:chatEntry
                                 required property var entry
-                                property bool expanded:root.appearance.thinking_mode==="shown"
-                                width:parent.width;wrapMode:Text.Wrap;textFormat:Text.PlainText;font.pixelSize:12
-                                color:entry.type==="user" ? root.accent : entry.type==="error" ? "#f4a99a" : root.ink
-                                visible:["user","text","error","tool_start","tool_result"].includes(entry.type) || entry.type==="thinking" && !!root.appearance.thinking_mode && root.appearance.thinking_mode!=="hidden"
-                                text:entry.type==="thinking" && !expanded ? "Thinking · expand" : entry.type==="tool_start" ? "↳ "+entry.name : entry.type==="user" ? "you / "+entry.text : (entry.text || "")
-                                MouseArea {anchors.fill:parent;enabled:parent.entry.type==="thinking";onClicked:parent.expanded=!parent.expanded}
+                                required property int index
+                                property bool thinking:entry.type==="thinking"
+                                property string thinkingKey:root.chatSession+":"+index
+                                property bool shown:root.entryVisible(entry)
+                                width:parent.width
+                                visible:shown
+                                height:shown ? implicitHeight : 0
+                                implicitHeight:thinking ? thought.implicitHeight : line.implicitHeight
+                                Label {
+                                    id:line
+                                    visible:!chatEntry.thinking && chatEntry.shown
+                                    width:parent.width;wrapMode:Text.Wrap;textFormat:Text.PlainText;font.pixelSize:12
+                                    color:chatEntry.entry.type==="user" ? root.accent : chatEntry.entry.type==="error" ? "#f4a99a" : root.ink
+                                    text:chatEntry.entry.type==="tool_start" ? "↳ "+chatEntry.entry.name : chatEntry.entry.type==="user" ? "you / "+chatEntry.entry.text : (chatEntry.entry.text || "")
+                                }
+                                ThinkingBlock {
+                                    id:thought
+                                    visible:chatEntry.thinking && chatEntry.shown
+                                    width:parent.width
+                                    entry:chatEntry.entry
+                                    expanded:root.isThinkingExpanded(chatEntry.thinkingKey)
+                                    streaming:chatEntry.index===chatModel.count-1 && !!root.selected && root.selected.state==="thinking"
+                                    onToggleRequested:root.setThinkingExpanded(chatEntry.thinkingKey,!thought.expanded)
+                                }
                             }
                         }
                     }
-                    onContentHeightChanged: if(contentItem) contentItem.contentY=Math.max(0,contentHeight-height)
+                    onContentHeightChanged: {
+                        if (!contentItem) return
+                        const wasAtBottom=chat.previousContentHeight<=0 || contentItem.contentY+height>=chat.previousContentHeight-8
+                        chat.previousContentHeight=contentHeight
+                        if (wasAtBottom) contentItem.contentY=Math.max(0,contentHeight-height)
+                    }
                 }
                 Rectangle {
                     visible:!!root.selected && !!root.selected.approval

@@ -334,19 +334,18 @@ impl Engine {
         .await?;
 
         let assistant = session::normalize_assistant(assistant);
-        // Providers normally stream text deltas. For non-streaming or broken
-        // servers, show the final content exactly once.
+        // Providers normally stream deltas. For non-streaming or broken
+        // servers, show the final reasoning and content exactly once. Reasoning
+        // goes first so a thinking block always precedes its answer.
+        if !streamed.saw_thinking {
+            if let Some(text) = reasoning_text(&assistant) {
+                events::thinking(&self.events, text);
+            }
+        }
         if !streamed.saw_text {
             if let Some(text) = assistant.get("content").and_then(Value::as_str) {
                 if !text.is_empty() {
                     events::text(&self.events, text);
-                }
-            }
-        }
-        if !streamed.saw_thinking {
-            if let Some(text) = assistant.get("reasoning_content").and_then(Value::as_str) {
-                if !text.is_empty() {
-                    events::thinking(&self.events, text);
                 }
             }
         }
@@ -481,6 +480,37 @@ impl Engine {
     }
 }
 
+/// Reasoning text from a provider message that did not stream it.
+///
+/// OpenAI-compatible servers disagree on the field name and shape: some send a
+/// string under `reasoning_content`, `reasoning` or `thinking`, and some wrap
+/// it in text parts. Missing or empty reasoning is not an error.
+fn reasoning_text(message: &Value) -> Option<String> {
+    ["reasoning_content", "reasoning", "thinking"]
+        .iter()
+        .find_map(|field| match message.get(*field) {
+            Some(Value::String(text)) if !text.trim().is_empty() => Some(text.clone()),
+            Some(Value::Array(parts)) => {
+                let text: String = parts
+                    .iter()
+                    .filter_map(|part| {
+                        part.as_str()
+                            .or_else(|| part.get("text").and_then(Value::as_str))
+                            .or_else(|| part.get("content").and_then(Value::as_str))
+                    })
+                    .collect();
+                (!text.trim().is_empty()).then_some(text)
+            }
+            Some(Value::Object(object)) => object
+                .get("text")
+                .or_else(|| object.get("content"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_string),
+            _ => None,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -584,6 +614,51 @@ mod tests {
             .iter()
             .filter_map(|event| event["type"].as_str())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn non_streaming_reasoning_is_shown_once_before_the_answer() {
+        let (_temp, config) = setup(2);
+        let _mock = test_support::install(|_messages, _tools| {
+            Ok(json!({
+                "role": "assistant",
+                "content": "four",
+                "reasoning": "two plus two"
+            }))
+        });
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = mpsc::unbounded_channel();
+        run(
+            config.clone(),
+            "thinking".into(),
+            "2+2?".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let events = drain(rx);
+        let thinking: Vec<&Value> = events
+            .iter()
+            .filter(|event| event["type"] == "thinking")
+            .collect();
+        assert_eq!(thinking.len(), 1);
+        assert_eq!(thinking[0]["text"], "two plus two");
+        let types = event_types(&events);
+        let thinking_at = types.iter().position(|kind| *kind == "thinking").unwrap();
+        let text_at = types.iter().position(|kind| *kind == "text").unwrap();
+        assert!(
+            thinking_at < text_at,
+            "thinking must precede text: {types:?}"
+        );
+
+        let messages = history(&config, "thinking");
+        assert_eq!(messages.last().unwrap()["reasoning"], "two plus two");
     }
 
     #[tokio::test]

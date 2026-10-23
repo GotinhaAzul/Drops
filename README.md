@@ -20,6 +20,8 @@ This installs Drops under `~/.local` and enables a small native widget in the Om
 
 Click a placed drop to chat. Idle drops shrink to colored dots. Click the anchor label to inspect context; Enter sends, Escape closes, and the stop icon cancels the current turn. `buddyctl cancel` stops all turns.
 
+Reasoning from thinking models streams into one compact, scrollable block instead of the chat itself: it starts collapsed with a word count, expands on click, and can be hidden or shown expanded by default with `[appearance].thinking_mode` (`"collapsed"`, `"hidden"`, or `"shown"`).
+
 `./install.sh` without the widget flag installs the standalone launcher only; run `drops` to toggle its panel. `PREFIX` overrides the install prefix. Existing Drops configuration is preserved; widget updates are backed up outside the plugin discovery directory. The optional Waybar example remains available. The installer makes no Hyprland, autostart, or systemd changes.
 
 For development, run `mise exec -- cargo build --workspace`, then `target/debug/buddyd` and `DROPS_CTL="$PWD/target/debug/buddyctl" quickshell -p ui/shell.qml`. Configuration files are optional; advanced settings such as `project_dir`, capabilities and external tools are illustrated in `examples/config.toml`.
@@ -66,6 +68,7 @@ python3 tests/qml-interactions.py
 python3 tests/failure-smoke.py
 python3 tests/shutdown-smoke.py
 python3 tests/qml-load.py
+python3 tests/qml-thinking.py
 # Opt-in: creates, moves and closes its own disposable terminal on Hyprland
 python3 tests/desktop-smoke.py
 # After an isolated install into .test-data/install-real/prefix:
