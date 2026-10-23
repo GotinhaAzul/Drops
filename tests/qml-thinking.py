@@ -51,7 +51,9 @@ harness = '''
         onTriggered:{
             if(++ticks>160){console.log("TEST_FAILURE timed out phase "+root.testPhase);Qt.quit();return}
             if(!root.selected)return
-            const thoughtItem=root.findNamed(chat.contentItem,"thinking-1")
+            const view=root.chatViews["fixture"]
+            if(!view||!view.scroll||!view.scroll.contentItem)return
+            const thoughtItem=root.findNamed(view.scroll.contentItem,"thinking-1")
             switch(root.testPhase){
             case 0:
                 if(!thoughtItem)return
@@ -63,11 +65,11 @@ harness = '''
                 root.setThinkingExpanded(root.chatSession+":1",false);root.testPhase++;break
             case 2:
                 if(!thoughtItem || thoughtItem.expanded)return
-                console.log("TEST_PHASE2", thoughtItem.visible, thoughtItem.expanded, thoughtItem.height, chat.contentItem.contentHeight)
+                console.log("TEST_PHASE2", thoughtItem.visible, thoughtItem.expanded, thoughtItem.height, view.scroll.contentItem.contentHeight)
                 const hidden=JSON.parse(JSON.stringify(root.state));hidden.appearance={thinking_mode:"hidden"};root.state=hidden;root.syncChat();root.testPhase++;break
             case 3:
                 if(!thoughtItem || thoughtItem.visible)return
-                console.log("TEST_PHASE3", thoughtItem.visible, thoughtItem.parent.height, chat.contentItem.contentHeight)
+                console.log("TEST_PHASE3", thoughtItem.visible, thoughtItem.parent.height, view.scroll.contentItem.contentHeight)
                 const shown=JSON.parse(JSON.stringify(root.state));shown.appearance={thinking_mode:"shown"};root.state=shown;root.thinkingExpanded={};root.syncChat();root.testPhase++;break
             case 4:
                 if(!thoughtItem || !thoughtItem.visible || !thoughtItem.expanded)return

@@ -18,7 +18,7 @@ This installs Drops under `~/.local` and enables a small native widget in the Om
 - A window drop is deleted when its attached window closes. A workspace drop stays until you delete it.
 - **⚙ Model connection** lets you paste the endpoint URL, enter the model name and save. For authentication, enter the name of an existing API-key environment variable; the key itself is never stored in TOML. A missing config is supported for first-run setup.
 
-Click a placed drop to chat. Idle drops shrink to colored dots. Click the anchor label to inspect context; Enter sends, Escape closes, and the stop icon cancels the current turn. `buddyctl cancel` stops all turns.
+Click a placed drop to open its in-place chat bubble. It greets the anchored window, offers contextual quick actions, and grows into a scrollable conversation. Idle drops shrink to colored dots. Click the anchor label to inspect context; Enter sends, Escape closes, and the stop icon cancels the current turn. `buddyctl cancel` stops all turns.
 
 Reasoning from thinking models streams into one compact, scrollable block instead of the chat itself: it starts collapsed with a word count, expands on click, and can be hidden or shown expanded by default with `[appearance].thinking_mode` (`"collapsed"`, `"hidden"`, or `"shown"`).
 
@@ -65,6 +65,7 @@ mise exec -- cargo fmt --all -- --check
 python3 tests/smoke.py
 python3 tests/widget-smoke.py
 python3 tests/qml-interactions.py
+python3 tests/qml-bubble.py
 python3 tests/failure-smoke.py
 python3 tests/window-content-smoke.py
 python3 tests/shutdown-smoke.py
