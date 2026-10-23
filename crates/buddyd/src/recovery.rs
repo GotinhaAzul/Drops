@@ -64,7 +64,19 @@ pub fn hydrate(blob: &mut Blob, session_dir: &std::path::Path) -> Result<()> {
                     continue;
                 };
                 if let Some(rendered) = text.strip_prefix(CONTEXT_PREFIX) {
-                    if let Ok(context) = serde_json::from_str::<Value>(rendered) {
+                    if let Ok(mut context) = serde_json::from_str::<Value>(rendered) {
+                        if let Some(parts) = message["content"].as_array() {
+                            if let Some(url) = parts.iter().find_map(|part| {
+                                part.pointer("/image_url/url").and_then(Value::as_str)
+                            }) {
+                                if let Some(image) = context
+                                    .pointer_mut("/content/image")
+                                    .and_then(Value::as_object_mut)
+                                {
+                                    image.insert("data_url".into(), json!(url));
+                                }
+                            }
+                        }
                         latest_context = Some(context);
                     }
                     continue;
@@ -367,6 +379,27 @@ mod tests {
         assert_eq!(b.history.len(), MAX_UI_ENTRIES);
         assert_eq!(b.history.first().unwrap()["text"], "m50");
         assert_eq!(b.history.last().unwrap()["text"], "m349");
+    }
+
+    #[test]
+    fn multimodal_context_restores_preview_without_chat_noise() {
+        let temp = TempDir::new();
+        write_lines(
+            temp.path(),
+            "vision",
+            &[json!({"role":"user","content":[
+                {"type":"text","text":"Context for this request (JSON):\n{\"content\":{\"text\":\"code\",\"image\":{\"width\":1}}}"},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,test"}}
+            ]})],
+        );
+        let mut b = blob("vision");
+        hydrate(&mut b, temp.path()).unwrap();
+        assert!(b.history.is_empty());
+        assert_eq!(b.context["content"]["text"], "code");
+        assert_eq!(
+            b.context["content"]["image"]["data_url"],
+            "data:image/png;base64,test"
+        );
     }
 
     #[test]

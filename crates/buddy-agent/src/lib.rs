@@ -12,6 +12,7 @@
 //!
 //! Design notes and the Pi attribution are in `ATTRIBUTION.md`.
 
+mod attachments;
 mod context_files;
 mod events;
 mod paths;
@@ -299,12 +300,7 @@ impl Engine {
         self.messages.extend(history);
 
         if !session::is_empty_context(&self.context) {
-            let rendered = serde_json::to_string_pretty(&self.context)
-                .unwrap_or_else(|_| self.context.to_string());
-            let message = json!({
-                "role": "user",
-                "content": format!("Context for this request (JSON):\n{rendered}")
-            });
+            let message = attachments::context_message(&self.context, self.config.provider.vision);
             self.log.append_message(&message)?;
             self.messages.push(message);
         }
@@ -325,6 +321,7 @@ impl Engine {
             .messages
             .iter()
             .filter_map(session::wire_message)
+            .map(|m| attachments::for_provider(m, self.config.provider.vision))
             .collect();
 
         let (assistant, streamed) = provider::complete(

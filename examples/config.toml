@@ -39,3 +39,15 @@ max_tokens_param = "max_tokens"
 # roundness = 0.43
 
 # thinking_mode = "collapsed" # "shown", "collapsed", or "hidden" (default)
+
+# Window content is refreshed when a message is sent.
+# Enable provider vision above only when the model accepts images.
+# [capture]
+# enabled = true
+# accessibility = true
+# terminal = true
+# screenshots = true
+# ocr = true
+# max_text_chars = 24000
+# max_image_edge = 1280
+# timeout_ms = 2500

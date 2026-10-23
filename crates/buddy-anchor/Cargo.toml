@@ -11,3 +11,6 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"

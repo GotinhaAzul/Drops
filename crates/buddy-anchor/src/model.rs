@@ -117,6 +117,8 @@ pub struct Workspace {
 /// One entry from `hyprctl -j monitors`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Monitor {
+    #[serde(default, rename = "solitaryBlockedBy")]
+    pub solitary_blocked_by: Vec<String>,
     #[serde(default)]
     pub id: i32,
     #[serde(default)]
@@ -144,6 +146,7 @@ pub struct Monitor {
 impl Default for Monitor {
     fn default() -> Self {
         Monitor {
+            solitary_blocked_by: Vec::new(),
             id: 0,
             name: String::new(),
             x: 0,

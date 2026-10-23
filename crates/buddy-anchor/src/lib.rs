@@ -29,6 +29,7 @@
 //! commands run, no configuration is written, and no desktop setting changes.
 
 pub mod bundle;
+pub mod capture;
 mod error;
 pub mod hit;
 mod hypr;

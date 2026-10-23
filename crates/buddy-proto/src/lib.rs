@@ -15,6 +15,12 @@ pub enum Command {
         model: String,
         #[serde(default)]
         api_key_env: String,
+        #[serde(default)]
+        vision: Option<bool>,
+        #[serde(default)]
+        capture_content: Option<bool>,
+        #[serde(default)]
+        screenshots: Option<bool>,
     },
     Create {
         #[serde(default)]

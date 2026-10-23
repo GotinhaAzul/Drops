@@ -1,0 +1,15 @@
+Capture module dependencies (crates/buddy-anchor/Cargo.toml)
+
+    image = { version = "0.25", default-features = false, features = ["png"] }
+    base64 = "0.22"
+
+Already present in the crate/workspace: anyhow, serde, serde_json, tokio (full,
+includes process), tokio-util (CancellationToken).
+
+Module export required in crates/buddy-anchor/src/lib.rs:
+
+    pub mod capture;
+
+Runtime commands used (no new global installs): /usr/bin/python for the embedded
+scripts/capture_text.py helper (include_str!), grim for screenshots, tesseract for
+OCR. All are optional at runtime and degrade to typed warnings.

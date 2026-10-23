@@ -30,8 +30,23 @@ ShellRoot {
         endpoint.text=c.base_url || "http://127.0.0.1:11434/v1"
         modelName.text=c.model || ""
         keyEnv.text=c.api_key_env || ""
+        visionMode.checked=!!c.vision
+        contentCapture.checked=c.capture_content!==false
+        screenCapture.checked=c.screenshots!==false
     }
     property bool chatOpen: false
+    property bool capturing: state.blobs.some(b=>b.state==="capturing")
+    property var inspectedContext: null
+    function inspectContext() {
+        inspectedContext=selected ? selected.context : null
+        contextView.open()
+        if(selected)send({type:"context",id:selectedId})
+    }
+    function contextMetadata(value) {
+        const copy=JSON.parse(JSON.stringify(value || {}))
+        if(copy.content && copy.content.image)delete copy.content.image.data_url
+        return JSON.stringify(copy,null,2)
+    }
     property var selected: chatOpen ? (state.blobs.find(b => b.id === selectedId) || null) : null
     property var appearance: state.appearance || ({})
     property color accent: appearance.accent || "#a7d8f5"
@@ -44,7 +59,7 @@ ShellRoot {
     property bool dragging: false
     property var preview: null
     property string chatSession: ""
-    property bool busy: !!selected && ["thinking","waiting","stopping"].includes(selected.state)
+    property bool busy: !!selected && ["capturing","thinking","waiting","stopping"].includes(selected.state)
     ListModel { id: chatModel; dynamicRoles: true }
     function syncChat() {
         if (chatSession !== selectedId) { chatModel.clear(); chatSession=selectedId }
@@ -88,7 +103,8 @@ ShellRoot {
                         if (!ids.includes(root.selectedId)) {root.selectedId=ids[0] || "";root.chatOpen=false}
                         if (!root.settingsInitialized) {root.loadSettings();root.settingsInitialized=true;root.settingsOpen=!msg.state.connection || !msg.state.connection.model}
                         root.syncChat()
-                    } else if (msg.type === "pointer") {root.pointerPending=false;if(msg.cursor){root.cursor=msg.cursor;root.cursorReady=true;motionWarmup.start()}}
+                    } else if (msg.type === "context") {root.inspectedContext=msg.context}
+                    else if (msg.type === "pointer") {root.pointerPending=false;if(msg.cursor){root.cursor=msg.cursor;root.cursorReady=true;motionWarmup.start()}}
                     else if(msg.type==="ok" && msg.id) {root.selectedId=msg.id;root.recentDropId=msg.id;recentTimer.restart()}
                     else if(msg.type==="ok" && msg.configured) {root.settingsOpen=false;root.failure=""}
                     else if (msg.type === "preview" && root.dragging) {root.preview=msg.geometry ? msg : null;root.failure=""}
@@ -139,11 +155,11 @@ ShellRoot {
     }
     PanelWindow {
         id: panel
-        visible:root.state.panel_open
+        visible:root.state.panel_open && !root.capturing
         anchors {top:true;right:true}
         margins {top:40;right:20}
         implicitWidth:260
-        implicitHeight:root.settingsOpen ? 340 : 250+(root.selected && root.selected.history.length ? 150 : 0)+(root.selected && root.selected.approval ? 180 : 0)+(root.failure ? 26 : 0)
+        implicitHeight:root.settingsOpen ? 444 : 250+(root.selected && root.selected.context && root.selected.context.content ? 20 : 0)+(root.selected && root.selected.history.length ? 150 : 0)+(root.selected && root.selected.approval ? 180 : 0)+(root.failure ? 26 : 0)
         color:"transparent";exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-panel"
         WlrLayershell.keyboardFocus:WlrKeyboardFocus.OnDemand
@@ -183,7 +199,13 @@ ShellRoot {
                 Label {
                     Layout.fillWidth:true;horizontalAlignment:Text.AlignHCenter;color:root.muted;font.pixelSize:10;elide:Text.ElideRight
                     text:root.currentDrop ? root.currentDrop.placement.label : "Make a drop, then drag it onto a window"
-                    MouseArea {anchors.fill:parent;enabled:!!root.selected;onClicked:contextView.open()}
+                    MouseArea {anchors.fill:parent;enabled:!!root.selected;onClicked:root.inspectContext()}
+                }
+                Label {
+                    visible:!!root.selected && !!root.selected.context && !!root.selected.context.content
+                    Layout.fillWidth:true;horizontalAlignment:Text.AlignHCenter;color:root.muted;font.pixelSize:10
+                    text:!root.selected || !root.selected.context || !root.selected.context.content ? "" : root.selected.context.content.status==="captured" ? "Window content attached · click to inspect" : "Window content unavailable · click for details"
+                    MouseArea {anchors.fill:parent;onClicked:root.inspectContext()}
                 }
                 RowLayout {
                     Layout.fillWidth:true;spacing:5
@@ -256,13 +278,27 @@ ShellRoot {
                 TextField {id:modelName;Layout.fillWidth:true;placeholderText:"Model served by your endpoint";font.pixelSize:11;selectByMouse:true}
                 Label {text:"API-key environment variable (optional)";color:root.muted;font.pixelSize:10}
                 TextField {id:keyEnv;Layout.fillWidth:true;placeholderText:"e.g. DROPS_API_KEY";font.pixelSize:11;selectByMouse:true}
+                CheckBox {id:contentCapture;text:"Read attached window content";palette.windowText:root.ink;font.pixelSize:11}
+                CheckBox {id:screenCapture;text:"Use screenshots / OCR fallback";palette.windowText:root.ink;font.pixelSize:11;enabled:contentCapture.checked}
+                CheckBox {id:visionMode;text:"Model supports images";palette.windowText:root.ink;font.pixelSize:11}
                 Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;color:"#f4a99a";font.pixelSize:10;wrapMode:Text.Wrap}
-                Button {id:saveConnectionButton;text:"Save connection";Layout.fillWidth:true;enabled:endpoint.text.trim().length>0 && modelName.text.trim().length>0;onClicked:root.send({type:"configure",base_url:endpoint.text,model:modelName.text,api_key_env:keyEnv.text})}
+                Button {id:saveConnectionButton;text:"Save connection";Layout.fillWidth:true;enabled:endpoint.text.trim().length>0 && modelName.text.trim().length>0;onClicked:root.send({type:"configure",base_url:endpoint.text,model:modelName.text,api_key_env:keyEnv.text,vision:visionMode.checked,capture_content:contentCapture.checked,screenshots:screenCapture.checked})}
             }
             Popup {
                 id:contextView;x:8;y:8;width:parent.width-16;height:parent.height-16;modal:true;padding:10
                 background:Rectangle {color:root.background;radius:12;border.color:root.accent}
-                ScrollView {anchors.fill:parent;TextArea {readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink;text:root.selected ? JSON.stringify(root.selected.context,null,2) : ""}}
+                ScrollView {
+                    id:contextScroll;anchors.fill:parent;contentWidth:availableWidth;clip:true
+                    Column {
+                        width:contextScroll.availableWidth;spacing:8
+                        Image {
+                            width:parent.width;height:visible ? Math.min(200,sourceSize.height*(width/Math.max(1,sourceSize.width))) : 0
+                            fillMode:Image.PreserveAspectFit;visible:!!source
+                            source:root.inspectedContext && root.inspectedContext.content && root.inspectedContext.content.image ? root.inspectedContext.content.image.data_url || "" : ""
+                        }
+                        TextArea {width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink;text:root.contextMetadata(root.inspectedContext)}
+                    }
+                }
             }
         }
     }
@@ -304,7 +340,7 @@ ShellRoot {
                     property var blob:root.state.blobs.find(b=>b.id===modelData) || null
                     property var pos:blob ? blob.placement : ({x:0,y:0,visible:false})
                     screen:monitorScope.monitor
-                    visible:!!blob && pos.visible && pos.x>=monitorScope.monitor.x && pos.x<monitorScope.monitor.x+monitorScope.monitor.width && pos.y>=monitorScope.monitor.y && pos.y<monitorScope.monitor.y+monitorScope.monitor.height
+                    visible:!root.capturing && !!blob && pos.visible && pos.x>=monitorScope.monitor.x && pos.x<monitorScope.monitor.x+monitorScope.monitor.width && pos.y>=monitorScope.monitor.y && pos.y<monitorScope.monitor.y+monitorScope.monitor.height
                     anchors {top:true;left:true}
                     margins {top:Math.max(0,pos.y-monitorScope.monitor.y);left:Math.max(0,pos.x-monitorScope.monitor.x)}
                     implicitWidth:56;implicitHeight:56;color:"transparent";exclusionMode:ExclusionMode.Ignore

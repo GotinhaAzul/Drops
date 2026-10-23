@@ -15,7 +15,7 @@ This is the initial Drops build. The feature inventory below separates code from
 
 ## Executed verification
 
-- 201 Rust tests pass: 78 agent, 45 provider, 69 anchor, 9 daemon/recovery.
+- 237 Rust tests pass, plus 34 Python text-capture checks. Capture covers lock refusal, geometry/occlusion, bounded subprocesses, image gating, multimodal recovery and state scrubbing.
 - Workspace Clippy passes with `-D warnings`; formatting is clean.
 - Failure-path integration verifies same-bridge cancellation during slow capture, pending-session fences, disk-save recovery, startup anchor refresh, retained offsets, graceful external-tool shutdown and strict-endpoint continuation after interrupted calls.
 - Headless integration passes streaming tool continuation, exact approval gating, denial, cancellation during approval, busy-session guards, file changes, context inspection, export/fork/clear, blob cap, malformed IPC, restart persistence and socket permissions.
@@ -30,6 +30,6 @@ Real Ollama/llama-server/hosted SSE recordings are not claimed: provider fixture
 
 The video session was restored during implementation. The actual `ui/shell.qml` then loaded successfully on Hyprland with the Wayland backend (`Configuration Loaded`, no runtime QML errors). Offscreen checks also load the controls using a substitute window surface. A disposable Foot terminal also passed live hit-testing, socket2 workspace hide/return and window-automatic deletion when an attached window closes, with the UI connected. Actual pointer dragging, multi-monitor mapping and fractional scaling still require interactive validation.
 
-Screenshot/vision workflows and browser/editor/terminal output adapters remain later work. Generic process metadata does not expose a terminal's scrollback or a browser page's text. Colors, size and roundness are configured in `[appearance]`; automatic Omarchy theme tracking remains follow-up work. Per-tool permission overrides and richer anchor-scoped tool lists also remain follow-up work; the initial policy is deliberately fixed: core file mutations and shell commands require approval.
+Window content capture now uses matched-window accessibility, optional matching tmux scrollback, visible-window OCR and vision attachments. Live disposable terminal, GTK editor and Chromium page checks passed through a local mock endpoint. Complete terminal scrollback and full page/document text depend on accessibility or tmux support; OCR covers only the visible crop. Locked sessions refuse capture. Colors, size and roundness are configured in `[appearance]`; automatic Omarchy theme tracking remains follow-up work. Per-tool permission overrides and richer anchor-scoped tool lists also remain follow-up work; the initial policy is deliberately fixed: core file mutations and shell commands require approval.
 
 A five-second debug-build sample with one real window drop measured 0.20% of one CPU core and 13.4 MiB daemon RSS. This excludes Quickshell memory and is not a full performance benchmark. Window geometry is checked every 200 ms through the control socket only while window drops exist; workspace-only sessions do no geometry IPC. The five-minute onboarding and ten-minute external-tool onboarding targets have not been measured.

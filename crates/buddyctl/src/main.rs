@@ -24,6 +24,12 @@ enum Action {
         model: String,
         #[arg(long, default_value = "")]
         api_key_env: String,
+        #[arg(long)]
+        vision: Option<bool>,
+        #[arg(long)]
+        capture_content: Option<bool>,
+        #[arg(long)]
+        screenshots: Option<bool>,
     },
     Create {
         #[arg(long, default_value="drop",value_parser=["drop","cat","sprout"])]
@@ -108,10 +114,16 @@ async fn main() -> Result<()> {
             base_url,
             model,
             api_key_env,
+            vision,
+            capture_content,
+            screenshots,
         } => Command::Configure {
             base_url,
             model,
             api_key_env,
+            vision,
+            capture_content,
+            screenshots,
         },
         Action::Create { appearance } => Command::Create {
             appearance: serde_json::from_value(serde_json::json!(appearance))?,
@@ -148,6 +160,7 @@ async fn main() -> Result<()> {
                 .and_then(|b| {
                     b.iter()
                         .find(|x| x["state"] == "waiting")
+                        .or_else(|| b.iter().find(|x| x["state"] == "capturing"))
                         .or_else(|| b.iter().find(|x| x["state"] == "thinking"))
                         .or_else(|| b.iter().find(|x| x["state"] == "error"))
                 })

@@ -23,6 +23,7 @@ pub fn window_context(
 
     json!({
         "kind": "window",
+        "screen_locked": snapshot.monitors.iter().any(|m|m.solitary_blocked_by.iter().any(|reason|reason=="LOCK")),
         "window": {
             "address": client.address,
             "class": client.class,
