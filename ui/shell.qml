@@ -184,7 +184,8 @@ ShellRoot {
         next[id]=view
         chatViews=next
     }
-    function unregisterChat(id) {
+    function unregisterChat(id,view) {
+        if (view !== undefined && chatViews[id] !== view) return
         const next=Object.assign({},chatViews)
         delete next[id]
         chatViews=next
@@ -371,10 +372,14 @@ ShellRoot {
     // disappears when the anchor does.
     component ChatBubble: PanelWindow {
         id:bubble
+        objectName:bubble.blob ? "chat-bubble-"+bubble.blob.id : "chat-bubble"
         required property var blob
         required property var monitor
         required property var place
+        required property bool hostVisible
         property bool open: !!blob && root.chatOpen && root.selectedId===blob.id
+        property bool active: open && hostVisible
+        property var registeredView: null
         property bool busy: !!blob && ["capturing","thinking","waiting","stopping"].includes(blob.state)
         property bool waiting: !!blob && blob.state==="waiting" && !!blob.approval
         property bool hasHistory: !!blob && blob.history.length>0
@@ -413,8 +418,23 @@ ShellRoot {
             const items=root.suggestionsFor(blob)
             if(items[index])root.submitChat(blob.id,items[index].prompt)
         }
+        function activate() {
+            if(!bubble.blob)return
+            intro=false;introTimer.restart()
+            previousLogHeight=0
+            const view=bubble.viewHandle()
+            bubble.registeredView=view
+            root.registerChat(bubble.blob.id,view)
+            if(bubble.blob.history.length>0)scrollToEnd.restart()
+        }
+        function deactivate() {
+            intro=false
+            const view=bubble.registeredView
+            bubble.registeredView=null
+            if(view&&bubble.blob)root.unregisterChat(bubble.blob.id,view)
+        }
         screen: monitor
-        visible: open && place.visible && !root.capturing
+        visible: bubble.active && !root.capturing
         anchors {top:true;left:true}
         margins {top:Math.max(0,bubble.top-monitor.y);left:Math.max(0,bubble.left-monitor.x)}
         implicitWidth: 312
@@ -427,19 +447,12 @@ ShellRoot {
             interval:300;repeat:true;running:bubble.visible && bubble.busy
             onTriggered:bubble.dotPhase=(bubble.dotPhase+1)%3
         }
-        onOpenChanged: {
-            if(open && !!blob){
-                intro=false;introTimer.restart()
-                previousLogHeight=0
-                root.registerChat(blob.id,bubble.viewHandle())
-                if(blob.history.length>0)scrollToEnd.restart()
-            } else if(!!blob) {
-                intro=false
-                root.unregisterChat(blob.id)
-            }
+        onActiveChanged: {
+            if(active)activate()
+            else deactivate()
         }
-        Component.onCompleted: if(open && !!blob) {introTimer.restart();root.registerChat(blob.id,bubble.viewHandle())}
-        Component.onDestruction: if(!!blob) root.unregisterChat(blob.id)
+        Component.onCompleted: if(active && !bubble.registeredView)activate()
+        Component.onDestruction: deactivate()
         Timer {id:introTimer;interval:16;onTriggered:bubble.intro=true}
         Timer {id:scrollToEnd;interval:30;onTriggered:{if(chatLog.contentItem)chatLog.contentItem.contentY=Math.max(0,chatLog.contentHeight-chatLog.height)}}
 
@@ -945,7 +958,7 @@ ShellRoot {
                         Text {anchors.centerIn:parent;text:"!";color:"#2b2a1f";font.pixelSize:11;font.bold:true}
                     }
                     DragArea {id:dropArea;blobId:placed.modelData}
-                    ChatBubble {blob:placed.blob;monitor:monitorScope.monitor;place:placed.pos}
+                    ChatBubble {blob:placed.blob;monitor:monitorScope.monitor;place:placed.pos;hostVisible:placed.visible}
                 }
             }
         }
