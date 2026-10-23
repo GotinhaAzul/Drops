@@ -4,28 +4,34 @@ A small desktop companion for Hyprland/Omarchy. Place up to three drops on windo
 
 ## Run
 
-Requires Linux, a Rust toolchain, Hyprland, Quickshell with Qt Quick Controls, and a configured OpenAI-compatible endpoint. No model is bundled or started automatically.
+Requires Linux, a Rust toolchain, Hyprland, and Quickshell with Qt Quick Controls. No model is bundled or started automatically.
 
 ```sh
-mise install
-mise exec -- cargo build --workspace
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/drops"
-cp -n examples/config.toml "${XDG_CONFIG_HOME:-$HOME/.config}/drops/config.toml"
-# Edit config.toml: endpoint, model, and a project_dir for file tools.
-target/debug/buddyd
-# In a second terminal on your Hyprland desktop:
-DROPS_CTL="$PWD/target/debug/buddyctl" quickshell -p ui/shell.qml
+./install.sh --omarchy-widget
 ```
 
-Or run `./install.sh` to build and install into `~/.local` (`PREFIX` overrides it), then run `drops`. It starts the daemon and UI on demand; subsequent calls toggle the small panel. The installer preserves an existing Drops config and makes no changes to Waybar, Hyprland, autostart, or systemd. Add the example Waybar module manually if wanted; clicking its dot runs `drops toggle`, so the first click also starts Drops.
+This installs Drops under `~/.local` and enables a small native widget in the Omarchy top bar. Click the drop icon to open its compact panel. The panel stays closed on startup.
 
-Click the Waybar dot to open a small drop and chat field. Drag the drop onto a window or empty workspace; the panel closes on placement. Click a placed drop to open its compact conversation. Idle drops shrink to dots. Tiny selectors appear when several drops are placed. History and approvals appear only during a conversation; click the anchor label to inspect its context. Enter sends, Escape closes, and the stop icon cancels the current turn. `buddyctl cancel` is the global kill switch.
+- **+** creates a drop (maximum three); **−** deletes the selected drop and conversation, stopping any running turn first.
+- Choose **Drop**, **Cat**, or **Sprout** to change that drop’s appearance.
+- Drag the avatar onto a window or empty workspace. A floating avatar follows the pointer with pickup and settle animations, and the panel closes after placement.
+- A window drop is deleted when its attached window closes. A workspace drop stays until you delete it.
+- **⚙ Model connection** lets you paste the endpoint URL, enter the model name and save. For authentication, enter the name of an existing API-key environment variable; the key itself is never stored in TOML. A missing config is supported for first-run setup.
+
+Click a placed drop to chat. Idle drops shrink to colored dots. Click the anchor label to inspect context; Enter sends, Escape closes, and the stop icon cancels the current turn. `buddyctl cancel` stops all turns.
+
+`./install.sh` without the widget flag installs the standalone launcher only; run `drops` to toggle its panel. `PREFIX` overrides the install prefix. Existing Drops configuration is preserved; widget updates are backed up outside the plugin discovery directory. The optional Waybar example remains available. The installer makes no Hyprland, autostart, or systemd changes.
+
+For development, run `mise exec -- cargo build --workspace`, then `target/debug/buddyd` and `DROPS_CTL="$PWD/target/debug/buddyctl" quickshell -p ui/shell.qml`. Configuration files are optional; advanced settings such as `project_dir`, capabilities and external tools are illustrated in `examples/config.toml`.
 
 ## Control
 
 ```sh
 buddyctl status
 buddyctl toggle
+buddyctl create --appearance cat
+buddyctl style BLOB_ID sprout
+buddyctl configure http://localhost:11434/v1 MODEL_NAME
 buddyctl drop 300 200
 buddyctl send BLOB_ID 'What is open here?'
 buddyctl context BLOB_ID
@@ -55,6 +61,8 @@ mise exec -- cargo test --workspace
 mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 mise exec -- cargo fmt --all -- --check
 python3 tests/smoke.py
+python3 tests/widget-smoke.py
+python3 tests/qml-interactions.py
 python3 tests/failure-smoke.py
 python3 tests/shutdown-smoke.py
 python3 tests/qml-load.py

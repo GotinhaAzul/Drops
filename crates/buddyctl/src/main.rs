@@ -19,6 +19,21 @@ enum Action {
     },
     Watch,
     Toggle,
+    Configure {
+        base_url: String,
+        model: String,
+        #[arg(long, default_value = "")]
+        api_key_env: String,
+    },
+    Create {
+        #[arg(long, default_value="drop",value_parser=["drop","cat","sprout"])]
+        appearance: String,
+    },
+    Style {
+        id: String,
+        #[arg(value_parser=["drop","cat","sprout"])]
+        appearance: String,
+    },
     Drop {
         x: i32,
         y: i32,
@@ -89,6 +104,22 @@ async fn main() -> Result<()> {
         Action::Status { .. } => Command::Status,
         Action::Watch => Command::Watch,
         Action::Toggle => Command::Toggle,
+        Action::Configure {
+            base_url,
+            model,
+            api_key_env,
+        } => Command::Configure {
+            base_url,
+            model,
+            api_key_env,
+        },
+        Action::Create { appearance } => Command::Create {
+            appearance: serde_json::from_value(serde_json::json!(appearance))?,
+        },
+        Action::Style { id, appearance } => Command::Style {
+            id,
+            appearance: serde_json::from_value(serde_json::json!(appearance))?,
+        },
         Action::Drop { x, y, id } => Command::Drop {
             x,
             y,

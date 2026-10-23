@@ -16,3 +16,4 @@ buddy-proto.workspace = true
 buddy-ai.workspace = true
 buddy-agent.workspace = true
 buddy-anchor.workspace = true
+reqwest.workspace = true

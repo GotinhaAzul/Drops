@@ -8,7 +8,22 @@ pub const MAX_FRAME: usize = 1024 * 1024;
 pub enum Command {
     Status,
     Watch,
+    Pointer,
     Toggle,
+    Configure {
+        base_url: String,
+        model: String,
+        #[serde(default)]
+        api_key_env: String,
+    },
+    Create {
+        #[serde(default)]
+        appearance: DropAppearance,
+    },
+    Style {
+        id: String,
+        appearance: DropAppearance,
+    },
     Preview {
         x: i32,
         y: i32,
@@ -54,8 +69,20 @@ pub enum Command {
         id: String,
     },
 }
+/// Small, named visual presets persist independently for each drop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DropAppearance {
+    #[default]
+    Drop,
+    Cat,
+    Sprout,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blob {
+    #[serde(default)]
+    pub appearance: DropAppearance,
     /// Decoration offset from the coordinate-free anchor reference.
     #[serde(default)]
     pub offset: [i32; 2],
@@ -68,6 +95,8 @@ pub struct Blob {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub connection: Value,
     #[serde(default)]
     pub appearance: Value,
     pub panel_open: bool,

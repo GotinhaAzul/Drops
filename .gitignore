@@ -2,3 +2,5 @@
 /.test-data/
 *.sock
 /core
+
+__pycache__/

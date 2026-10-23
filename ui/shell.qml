@@ -12,6 +12,25 @@ ShellRoot {
     // Surface identity depends only on blob ids, never on streaming messages.
     property var blobIds: []
     property string selectedId: ""
+    property var currentDrop: state.blobs.find(b=>b.id===selectedId) || null
+    property var looks: ["drop","cat","sprout"]
+    property string pendingLook: "drop"
+    property bool settingsOpen: false
+    property bool settingsInitialized: false
+    property string dragId: ""
+    property string dragLook: "drop"
+    property var cursor: ({x:0,y:0})
+    property bool pointerPending: false
+    property bool cursorReady: false
+    property bool skipMotion: true
+    property bool settling: false
+    property string recentDropId: ""
+    function loadSettings() {
+        const c=state.connection || ({})
+        endpoint.text=c.base_url || "http://127.0.0.1:11434/v1"
+        modelName.text=c.model || ""
+        keyEnv.text=c.api_key_env || ""
+    }
     property bool chatOpen: false
     property var selected: chatOpen ? (state.blobs.find(b => b.id === selectedId) || null) : null
     property var appearance: state.appearance || ({})
@@ -42,7 +61,7 @@ ShellRoot {
         bridge.write(JSON.stringify(command)+"\n")
     }
     function drop(id) {
-        dragging=false; preview=null; failure=""
+        dragging=false; preview=null; failure="";settling=true;settleTimer.restart()
         const command={type:"drop",x:0,y:0,use_cursor:true}
         if (id) command.id=id
         send(command)
@@ -66,21 +85,35 @@ ShellRoot {
                         if (JSON.stringify(ids)!==JSON.stringify(root.blobIds)) root.blobIds=ids
                         if (!msg.state.panel_open) root.chatOpen=false
                         root.state=msg.state
+                        if (!ids.includes(root.selectedId)) {root.selectedId=ids[0] || "";root.chatOpen=false}
+                        if (!root.settingsInitialized) {root.loadSettings();root.settingsInitialized=true;root.settingsOpen=!msg.state.connection || !msg.state.connection.model}
                         root.syncChat()
-                    } else if (msg.type === "preview" && root.dragging) {root.preview=msg.geometry ? msg : null;root.failure=""}
+                    } else if (msg.type === "pointer") {root.pointerPending=false;if(msg.cursor){root.cursor=msg.cursor;root.cursorReady=true;motionWarmup.start()}}
+                    else if(msg.type==="ok" && msg.id) {root.selectedId=msg.id;root.recentDropId=msg.id;recentTimer.restart()}
+                    else if(msg.type==="ok" && msg.configured) {root.settingsOpen=false;root.failure=""}
+                    else if (msg.type === "preview" && root.dragging) {root.preview=msg.geometry ? msg : null;root.failure=""}
                     else if (msg.type === "error") root.failure=msg.message
                 } catch(e) { root.failure=String(e) }
             }
         }
-        onExited: { root.connected=false; root.failure="Start buddyd to connect." }
+        onExited: { root.connected=false;root.dragging=false;root.settling=false;root.pointerPending=false;root.failure="Start buddyd to connect." }
     }
     Timer { interval:2000; repeat:true; running:!bridge.running; onTriggered:bridge.running=true }
+    Timer {id:motionWarmup;interval:32;onTriggered:root.skipMotion=false}
+    Timer {id:settleTimer;interval:180;onTriggered:root.settling=false}
+    Timer {id:recentTimer;interval:1100;onTriggered:root.recentDropId=""}
+    Timer {interval:16;repeat:true;running:root.dragging;onTriggered:{if(!root.pointerPending){root.pointerPending=true;root.send({type:"pointer"})}}}
     Timer { interval:120; repeat:true; running:root.dragging; onTriggered:root.send({type:"preview",x:0,y:0,use_cursor:true}) }
 
     component DropFace: Rectangle {
         property bool awake:true
-        property color tint:root.accent
+        property string look:"drop"
+        property color tint:look==="cat" ? "#f2c6a0" : look==="sprout" ? "#b8dca4" : root.accent
         color:tint
+        Rectangle {visible:parent.awake && parent.look==="cat";width:parent.width*0.28;height:width;rotation:45;radius:3;color:parent.color;x:parent.width*0.08;y:-height*0.25;z:-1}
+        Rectangle {visible:parent.awake && parent.look==="cat";width:parent.width*0.28;height:width;rotation:45;radius:3;color:parent.color;x:parent.width*0.64;y:-height*0.25;z:-1}
+        Rectangle {visible:parent.awake && parent.look==="sprout";width:parent.width*0.34;height:parent.width*0.18;radius:height/2;color:"#7fa76a";rotation:30;x:parent.width*0.2;y:-height*0.65}
+        Rectangle {visible:parent.awake && parent.look==="sprout";width:parent.width*0.34;height:parent.width*0.18;radius:height/2;color:"#94bd7c";rotation:-30;x:parent.width*0.49;y:-height*0.65}
         radius: width*(typeof root.appearance.roundness === "number" ? Math.max(0,Math.min(0.5,root.appearance.roundness)) : 0.48)
         Behavior on width { NumberAnimation {duration:160} }
         Behavior on height { NumberAnimation {duration:160} }
@@ -95,14 +128,14 @@ ShellRoot {
         property real sx:0
         property real sy:0
         anchors.fill:parent; cursorShape:Qt.OpenHandCursor
-        onPressed: mouse=> {sx=mouse.x;sy=mouse.y}
-        onPositionChanged: mouse=> {if(pressed && Math.abs(mouse.x-sx)+Math.abs(mouse.y-sy)>10) root.dragging=true}
+        onPressed: mouse=> {sx=mouse.x;sy=mouse.y;root.dragId=blobId;root.cursorReady=false;root.skipMotion=true;const b=root.state.blobs.find(b=>b.id===blobId);root.dragLook=b ? b.appearance || "drop" : root.pendingLook;root.settling=false}
+        onPositionChanged: mouse=> {if(pressed && Math.abs(mouse.x-sx)+Math.abs(mouse.y-sy)>6) root.dragging=true}
         onReleased: mouse=> {
             if (root.dragging) root.drop(blobId)
-            else if(blobId) root.openChat(blobId)
+            else if(blobId && root.state.blobs.find(b=>b.id===blobId && b.placement.anchor.kind!=="panel")) root.openChat(blobId)
             root.dragging=false;root.preview=null
         }
-        onCanceled: {root.dragging=false;root.preview=null}
+        onCanceled: {root.dragging=false;root.preview=null;root.settling=false;root.pointerPending=false}
     }
     PanelWindow {
         id: panel
@@ -110,7 +143,7 @@ ShellRoot {
         anchors {top:true;right:true}
         margins {top:40;right:20}
         implicitWidth:260
-        implicitHeight:210+(root.selected && root.selected.history.length ? 150 : 0)+(root.selected && root.selected.approval ? 180 : 0)+(root.failure ? 26 : 0)
+        implicitHeight:root.settingsOpen ? 340 : 250+(root.selected && root.selected.history.length ? 150 : 0)+(root.selected && root.selected.approval ? 180 : 0)+(root.failure ? 26 : 0)
         color:"transparent";exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-panel"
         WlrLayershell.keyboardFocus:WlrKeyboardFocus.OnDemand
@@ -118,13 +151,16 @@ ShellRoot {
         Rectangle {
             anchors.fill:parent;color:root.background;radius:18;border.color:"#4b5545";border.width:1
             ColumnLayout {
+                visible:!root.settingsOpen
                 anchors.fill:parent;anchors.margins:14;spacing:8
                 Item {
                     Layout.fillWidth:true;Layout.preferredHeight:112
                     DropFace {
                         anchors.centerIn:parent;width:76;height:74
-                        tint:root.selected && root.selected.state==="waiting" ? "#eed29b" : root.accent
-                        DragArea {blobId:root.selected ? root.selectedId : ""}
+                        look:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook
+                        opacity:!root.currentDrop ? 0.45 : root.dragging && root.dragId===root.currentDrop.id ? 0 : 1
+                        Behavior on opacity {NumberAnimation{duration:70}}
+                        DragArea {enabled:!!root.currentDrop;blobId:root.currentDrop ? root.currentDrop.id : ""}
                     }
                     ToolButton {
                         anchors.top:parent.top;anchors.right:parent.right
@@ -139,15 +175,28 @@ ShellRoot {
                             delegate: Rectangle {
                                 required property string modelData
                                 width:8;height:8;radius:4;color:root.accent;opacity:root.selectedId===modelData && root.chatOpen ? 1 : 0.4
-                                MouseArea {anchors.fill:parent;anchors.margins:-5;onClicked:root.openChat(parent.modelData)}
+                                MouseArea {anchors.fill:parent;anchors.margins:-5;onClicked:{root.selectedId=parent.modelData;root.chatOpen=false}}
                             }
                         }
                     }
                 }
                 Label {
                     Layout.fillWidth:true;horizontalAlignment:Text.AlignHCenter;color:root.muted;font.pixelSize:10;elide:Text.ElideRight
-                    text:root.selected ? root.selected.placement.label : "Drag a drop onto a window"
+                    text:root.currentDrop ? root.currentDrop.placement.label : "Make a drop, then drag it onto a window"
                     MouseArea {anchors.fill:parent;enabled:!!root.selected;onClicked:contextView.open()}
+                }
+                RowLayout {
+                    Layout.fillWidth:true;spacing:5
+                    ComboBox {
+                        id:lookSelector
+                        Layout.fillWidth:true;Layout.preferredHeight:28
+                        model:["Drop","Cat","Sprout"];font.pixelSize:11
+                        currentIndex:root.looks.indexOf(root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook)
+                        onActivated:index=>{root.pendingLook=root.looks[index];if(root.currentDrop)root.send({type:"style",id:root.currentDrop.id,appearance:root.looks[index]})}
+                    }
+                    Button {id:newDropButton;Accessible.name:"New drop";text:"+";ToolTip.visible:hovered;ToolTip.text:"New drop";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:root.blobIds.length<3;onClicked:{root.chatOpen=false;root.send({type:"create",appearance:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook})}}
+                    Button {id:deleteDropButton;Accessible.name:"Delete drop";text:"−";ToolTip.visible:hovered;ToolTip.text:"Delete selected drop and conversation";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:!!root.currentDrop;onClicked:root.send({type:"remove",id:root.currentDrop.id})}
+                    ToolButton {text:"⚙";ToolTip.visible:hovered;ToolTip.text:"Model connection";Layout.preferredWidth:28;Layout.preferredHeight:28;onClicked:{root.loadSettings();root.settingsOpen=true;root.failure=""}}
                 }
                 ScrollView {
                     id:chat;visible:!!root.selected && root.selected.history.length>0
@@ -187,12 +236,28 @@ ShellRoot {
                 }
                 TextField {
                     id:input;Layout.fillWidth:true;Layout.preferredHeight:34
-                    enabled:!!root.selected && !root.busy
+                    enabled:!!root.selected && root.selected.placement.anchor.kind!=="panel" && !root.busy
                     placeholderText:root.selected ? "Chat…" : "Place a drop to chat";color:root.ink;font.pixelSize:12
                     background:Rectangle {color:"#303a2c";radius:7;border.color:input.activeFocus ? root.accent : "#4b5545"}
                     onAccepted: {if(text.trim()){root.failure="";root.send({type:"send",id:root.selectedId,text:text});text=""}}
                 }
                 Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;wrapMode:Text.Wrap;color:"#f4a99a";font.pixelSize:10}
+            }
+            ColumnLayout {
+                visible:root.settingsOpen
+                anchors.fill:parent;anchors.margins:16;spacing:8
+                RowLayout {
+                    Label {text:"Model connection";color:root.ink;font.pixelSize:14;Layout.fillWidth:true}
+                    ToolButton {text:"×";palette.buttonText:root.muted;onClicked:root.settingsOpen=false}
+                }
+                Label {text:"Endpoint URL";color:root.muted;font.pixelSize:11}
+                TextField {id:endpoint;Layout.fillWidth:true;placeholderText:"http://localhost:11434/v1";font.pixelSize:11;selectByMouse:true}
+                Label {text:"Model name";color:root.muted;font.pixelSize:11}
+                TextField {id:modelName;Layout.fillWidth:true;placeholderText:"Model served by your endpoint";font.pixelSize:11;selectByMouse:true}
+                Label {text:"API-key environment variable (optional)";color:root.muted;font.pixelSize:10}
+                TextField {id:keyEnv;Layout.fillWidth:true;placeholderText:"e.g. DROPS_API_KEY";font.pixelSize:11;selectByMouse:true}
+                Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;color:"#f4a99a";font.pixelSize:10;wrapMode:Text.Wrap}
+                Button {id:saveConnectionButton;text:"Save connection";Layout.fillWidth:true;enabled:endpoint.text.trim().length>0 && modelName.text.trim().length>0;onClicked:root.send({type:"configure",base_url:endpoint.text,model:modelName.text,api_key_env:keyEnv.text})}
             }
             Popup {
                 id:contextView;x:8;y:8;width:parent.width-16;height:parent.height-16;modal:true;padding:10
@@ -208,14 +273,27 @@ ShellRoot {
             required property var modelData
             property var monitor:modelData
             PanelWindow {
-                screen:monitorScope.monitor;visible:root.dragging && !!root.preview
+                screen:monitorScope.monitor;visible:root.dragging || root.settling
                 anchors {top:true;left:true;right:true;bottom:true}
                 color:"transparent";exclusionMode:ExclusionMode.Ignore;mask:Region {}
                 WlrLayershell.namespace:"drops-preview";WlrLayershell.keyboardFocus:WlrKeyboardFocus.None
                 Rectangle {
+                    visible:root.dragging && !!root.preview
                     property var g:root.preview ? root.preview.geometry : ({x:0,y:0,width:0,height:0})
                     x:(g.x||0)-monitorScope.monitor.x;y:(g.y||0)-monitorScope.monitor.y
                     width:g.width||160;height:g.height||56;radius:10;color:"#12a7d8f5";border.color:root.accent;border.width:2
+                }
+                DropFace {
+                    id:dragGhost
+                    visible:root.cursorReady
+                    look:root.dragLook;awake:true;width:root.blobSize;height:root.blobSize-2
+                    x:root.cursor.x-monitorScope.monitor.x-width/2;y:root.cursor.y-monitorScope.monitor.y-height/2
+                    scale:root.dragging ? 1.15 : 1
+                    opacity:root.dragging ? 1 : 0
+                    Behavior on x {enabled:!root.skipMotion;NumberAnimation{duration:32;easing.type:Easing.OutQuad}}
+                    Behavior on y {enabled:!root.skipMotion;NumberAnimation{duration:32;easing.type:Easing.OutQuad}}
+                    Behavior on scale {NumberAnimation{duration:140;easing.type:Easing.OutCubic}}
+                    Behavior on opacity {NumberAnimation{duration:160}}
                 }
             }
             Variants {
@@ -232,9 +310,13 @@ ShellRoot {
                     implicitWidth:56;implicitHeight:56;color:"transparent";exclusionMode:ExclusionMode.Ignore
                     WlrLayershell.namespace:"drops-blob";WlrLayershell.keyboardFocus:WlrKeyboardFocus.None
                     DropFace {
-                        anchors.centerIn:parent;awake:placed.blob && (placed.blob.state!=="idle" || root.selectedId===placed.modelData && root.chatOpen)
+                        anchors.centerIn:parent;awake:placed.blob && (placed.blob.state!=="idle" || root.recentDropId===placed.modelData || root.selectedId===placed.modelData && root.chatOpen)
+                        look:placed.blob ? placed.blob.appearance || "drop" : "drop"
+                        opacity:root.dragging && root.dragId===placed.modelData ? 0 : 1
+                        Behavior on opacity {NumberAnimation{duration:70}}
                         width:awake ? root.blobSize : 13;height:awake ? root.blobSize-2 : 13
-                        tint:placed.blob && placed.blob.state==="waiting" ? "#eed29b" : root.accent
+                        border.width:placed.blob && placed.blob.state==="waiting" ? 2 : 0
+                        border.color:"#eed29b"
                     }
                     DragArea {blobId:placed.modelData}
                 }

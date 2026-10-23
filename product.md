@@ -26,7 +26,7 @@ Buddy aims to feel like a small pet you leave on your terminal, your browser, or
 
 ## 5. Core concepts
 
-**The dot.** A tiny indicator on the top bar (Waybar). It shows Buddy's state at a glance and opens the Buddy panel on click.
+**The dot.** A tiny indicator on the top bar (native Omarchy shell widget; optional Waybar adapter). It shows Buddy's state at a glance and opens the Buddy panel on click.
 
 **The panel.** A small overlay window containing a blob and a chat bar. It is the home base where you start a conversation and where blobs are picked up.
 
@@ -56,7 +56,7 @@ A placed blob stays put:
 
 - It follows its window when the window moves, resizes, floats, or changes workspace.
 - It hides when its workspace is not visible and reappears when you return.
-- It reacts when its window closes: the blob can retire, ask what to do, or fall back to the workspace.
+- When its attached window closes, the drop and its local conversation are deleted, stopping any running turn first.
 - It stays small and unobtrusive, and it never steals focus unless you interact with it.
 
 Clicking a placed blob opens a compact chat bar attached to it, so you talk to that blob in context.
@@ -126,7 +126,7 @@ Possible later addition: an embedded scripting layer (such as Lua) for in-proces
 
 Buddy is a small set of cooperating pieces. Most logic lives in Rust; the UI is thin.
 
-- **Waybar module:** the dot, driven by a tiny CLI.
+- **Omarchy bar widget:** a small native shell widget opens the compact management/chat panel on click. Users create, style, and delete drops there. An optional Waybar adapter remains available.
 - **Quickshell UI (QML):** renders the panel, blobs, drag feedback, and chat. It holds no business logic and renders whatever state the daemon sends.
 - **Daemon (Rust):** the brain. It contains the agent loop, tool registry, provider adapters, session storage, and Hyprland integration.
 - **Control CLI (Rust):** toggle, status, and send commands for Waybar and scripts.
@@ -254,3 +254,11 @@ max_tokens_param = "max_tokens"
 - **Tool protocol:** decided: a custom stdio protocol.
 - **Fork vs. reference:** decided: copy pi's internals almost wholesale.
 - **Licensing and distribution:** decided: distribute with an install script. The license is MIT.
+
+## UX decisions (updated)
+
+- The compact panel opens only after clicking the bar widget or a placed drop.
+- The widget panel provides create/delete controls and distinct Drop, Cat, and Sprout appearances.
+- Model settings accept a pasted endpoint URL and model name; API-key environment variables are optional.
+- Dragging displays a smoothly interpolated avatar with pickup and settle animations.
+- Closing an attached window deletes its drop; workspace drops are removed manually.

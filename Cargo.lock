@@ -150,6 +150,7 @@ dependencies = [
  "buddy-anchor",
  "buddy-proto",
  "clap",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

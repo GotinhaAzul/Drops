@@ -9,11 +9,22 @@ use tokio::{
 };
 
 pub async fn clients(cached: &mut Option<PathBuf>) -> Result<Vec<Client>> {
+    request(cached, b"j/clients").await
+}
+/// A cheap cursor read for smooth drag rendering, without spawning hyprctl.
+pub async fn cursor(cached: &mut Option<PathBuf>) -> Result<(i32, i32)> {
+    let pos: crate::CursorPos = request(cached, b"j/cursorpos").await?;
+    Ok((pos.x, pos.y))
+}
+async fn request<T: serde::de::DeserializeOwned>(
+    cached: &mut Option<PathBuf>,
+    operation: &[u8],
+) -> Result<T> {
     if cached.is_none() {
         *cached = inherited_socket();
     }
     if let Some(path) = cached.as_ref() {
-        if let Ok(result) = query(path).await {
+        if let Ok(result) = query(path, operation).await {
             return Ok(result);
         }
     }
@@ -41,7 +52,7 @@ pub async fn clients(cached: &mut Option<PathBuf>) -> Result<Vec<Client>> {
         .into_iter()
         .find(|p| p.exists())
         .context("control socket missing")?;
-    let result = query(&path).await?;
+    let result = query(&path, operation).await?;
     *cached = Some(path);
     Ok(result)
 }
@@ -67,10 +78,13 @@ fn socket_paths(signature: &str) -> Vec<PathBuf> {
     );
     paths
 }
-async fn query(path: &std::path::Path) -> Result<Vec<Client>> {
+async fn query<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    operation: &[u8],
+) -> Result<T> {
     tokio::time::timeout(Duration::from_millis(400), async {
         let mut socket = UnixStream::connect(path).await?;
-        socket.write_all(b"j/clients").await?;
+        socket.write_all(operation).await?;
         socket.shutdown().await?;
         let mut response = Vec::new();
         socket

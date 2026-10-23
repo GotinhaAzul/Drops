@@ -2,11 +2,15 @@ mod geometry;
 mod recovery;
 mod rules;
 use anyhow::{anyhow, bail, Context, Result};
-use buddy_proto::{Blob, Command, Snapshot, MAX_BLOBS, MAX_FRAME};
+use buddy_proto::{Blob, Command, DropAppearance, Snapshot, MAX_BLOBS, MAX_FRAME};
 use clap::Parser;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
@@ -52,6 +56,9 @@ struct App {
     dirty: bool,
     snapshot: Snapshot,
     running: HashMap<String, Running>,
+    retiring: HashSet<String>,
+    config_path: PathBuf,
+    cursor_socket: Arc<Mutex<Option<PathBuf>>>,
     config: Config,
     data: PathBuf,
     headless: bool,
@@ -91,12 +98,19 @@ async fn main() -> Result<()> {
     let path = args
         .config
         .unwrap_or_else(|| default_dir("XDG_CONFIG_HOME", "drops/config.toml"));
-    let config: Config = toml::from_str(&std::fs::read_to_string(&path).with_context(|| {
-        format!(
-            "Read {}; copy examples/config.toml and configure a provider",
-            path.display()
-        )
-    })?)?;
+    let config: Config = match std::fs::read_to_string(&path) {
+        Ok(text) => toml::from_str(&text)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config {
+            appearance: Value::Null,
+            provider: HashMap::from([("local".into(), buddy_ai::ProviderConfig::default())]),
+            active_provider: "local".into(),
+            project_dir: None,
+            instructions: String::new(),
+            external_tools: vec![],
+            anchor_rules: vec![],
+        },
+        Err(e) => return Err(e).with_context(|| format!("Read {}", path.display())),
+    };
     if let Some(root) = &config.project_dir {
         let resolved = std::fs::canonicalize(root)
             .with_context(|| format!("project_dir must exist: {}", root.display()))?;
@@ -117,6 +131,7 @@ async fn main() -> Result<()> {
         serde_json::from_slice(&std::fs::read(data.join("blobs.json"))?)?
     } else {
         Snapshot {
+            connection: Value::Null,
             appearance: config.appearance.clone(),
             panel_open: false,
             blobs: vec![],
@@ -124,6 +139,8 @@ async fn main() -> Result<()> {
         }
     };
     snapshot.appearance = config.appearance.clone();
+    snapshot.panel_open = false;
+    snapshot.connection = connection(&config);
     if snapshot.blobs.len() > MAX_BLOBS {
         bail!("saved state exceeds the three-blob limit");
     }
@@ -159,6 +176,9 @@ async fn main() -> Result<()> {
         dirty: false,
         snapshot,
         running: HashMap::new(),
+        retiring: HashSet::new(),
+        config_path: path,
+        cursor_socket: Arc::new(Mutex::new(None)),
         config,
         data,
         headless: args.headless,
@@ -262,6 +282,18 @@ async fn refresh_anchors(app: &Shared) -> bool {
         if let Ok(anchor) =
             serde_json::from_value::<buddy_anchor::Anchor>(placement["anchor"].clone())
         {
+            if let buddy_anchor::Anchor::Window { address } = &anchor {
+                if !desktop
+                    .clients
+                    .iter()
+                    .any(|c| c.address.eq_ignore_ascii_case(address))
+                {
+                    if let Err(e) = remove_blob(app, &id).await {
+                        eprintln!("Closed-window drop cleanup: {e:#}");
+                    }
+                    continue;
+                }
+            }
             if let Ok(mut p) = buddy_anchor::refresh_from_snapshot(&desktop, &anchor) {
                 if p.anchor != anchor {
                     offset = [
@@ -354,13 +386,41 @@ async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
         }
     }
 }
+async fn cursor_position(app: &Shared) -> Result<(i32, i32)> {
+    let socket = {
+        let a = app.lock().await;
+        if a.headless {
+            bail!("cursor tracking is unavailable in headless mode");
+        }
+        a.cursor_socket.clone()
+    };
+    let mut cached = socket.lock().await;
+    buddy_anchor::control::cursor(&mut cached).await
+}
 async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
+    if let Command::Pointer = cmd {
+        return Ok(match cursor_position(app).await {
+            Ok((x, y)) => json!({"type":"pointer","cursor":{"x":x,"y":y}}),
+            Err(_) => json!({"type":"pointer","cursor":null}),
+        });
+    }
+    if let Command::Configure {
+        base_url,
+        model,
+        api_key_env,
+    } = cmd
+    {
+        return configure(app, base_url, model, api_key_env).await;
+    }
+    if let Command::Remove { id } = cmd {
+        return remove_blob(app, &id).await;
+    }
     if let Command::Send { id, text } = cmd {
         return send(app, id, text).await;
     }
     if let Command::Preview { x, y, use_cursor } = cmd {
         let (x, y) = if use_cursor && !app.lock().await.headless {
-            buddy_anchor::cursor_position().await?
+            cursor_position(app).await?
         } else {
             (x, y)
         };
@@ -386,7 +446,7 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
     } = cmd
     {
         let (x, y) = if use_cursor && !app.lock().await.headless {
-            buddy_anchor::cursor_position().await?
+            cursor_position(app).await?
         } else {
             (x, y)
         };
@@ -396,11 +456,16 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
         } else {
             serde_json::to_value(buddy_anchor::hit_test(x, y).await?)?
         };
-        let (placement, offset) = place_drop(reference, x, y);
+        let (render_x, render_y) = if use_cursor {
+            (x.saturating_sub(28), y.saturating_sub(28))
+        } else {
+            (x, y)
+        };
+        let (placement, offset) = place_drop(reference, render_x, render_y);
         let mut a = app.lock().await;
         let id = if let Some(id) = id {
             let i = a.index(&id)?;
-            if a.running.contains_key(&id) {
+            if a.running.contains_key(&id) || a.retiring.contains(&id) {
                 bail!("cancel the turn before moving its anchor")
             };
             a.snapshot.blobs[i].placement = placement;
@@ -412,6 +477,7 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
             };
             let id = uuid::Uuid::new_v4().to_string();
             a.snapshot.blobs.push(Blob {
+                appearance: DropAppearance::default(),
                 offset,
                 id: id.clone(),
                 placement,
@@ -432,6 +498,21 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
     match cmd {
         Command::Status => return Ok(json!({"type":"state","state":a.snapshot})),
         Command::Toggle => a.snapshot.panel_open = !a.snapshot.panel_open,
+        Command::Create { appearance } => {
+            if a.snapshot.blobs.len() >= MAX_BLOBS {
+                bail!("maximum of three drops");
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            a.snapshot.blobs.push(Blob{appearance,offset:[0,0],id:id.clone(),placement:json!({"anchor":{"kind":"panel"},"visible":false,"x":0,"y":0,"label":"Ready to place"}),state:"idle".into(),history:vec![],context:Value::Null,approval:None});
+            a.publish();
+            drop(a);
+            persist(app).await?;
+            return Ok(json!({"type":"ok","id":id}));
+        }
+        Command::Style { id, appearance } => {
+            let i = a.index(&id)?;
+            a.snapshot.blobs[i].appearance = appearance;
+        }
         Command::Confirm { id, approve } => {
             let i = a.index(&id)?;
             if a.snapshot.blobs[i].approval.is_none() {
@@ -476,17 +557,6 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
             a.index(&id)?;
             a.snapshot.panel_open = true;
         }
-        Command::Remove { id } => {
-            let i = a.index(&id)?;
-            if a.running.contains_key(&id) {
-                bail!("cancel and wait for idle before removing")
-            };
-            let session = buddy_agent::session_path(&a.data.join("sessions"), &id)?;
-            if session.exists() {
-                std::fs::remove_file(session)?;
-            }
-            a.snapshot.blobs.remove(i);
-        }
         Command::Context { id } => {
             let i = a.index(&id)?;
             return Ok(json!({"type":"context","context":a.snapshot.blobs[i].context}));
@@ -503,7 +573,7 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
         }
         Command::Clear { id } => {
             let i = a.index(&id)?;
-            if a.running.contains_key(&id) {
+            if a.running.contains_key(&id) || a.retiring.contains(&id) {
                 bail!("session is busy")
             };
             let p = buddy_agent::session_path(&a.data.join("sessions"), &id)?;
@@ -515,7 +585,7 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
         }
         Command::Fork { id } => {
             let i = a.index(&id)?;
-            if a.running.contains_key(&id) {
+            if a.running.contains_key(&id) || a.retiring.contains(&id) {
                 bail!("session is busy")
             };
             if a.snapshot.blobs.len() >= MAX_BLOBS {
@@ -542,16 +612,191 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
     persist(app).await?;
     Ok(json!({"type":"ok"}))
 }
+/// Deleting a drop first stops its turn, then removes its persisted session.
+async fn remove_blob(app: &Shared, id: &str) -> Result<Value> {
+    let abort = {
+        let mut a = app.lock().await;
+        let i = a.index(id)?;
+        a.retiring.insert(id.to_string());
+        let abort = if let Some(r) = a.running.get(id) {
+            r.cancel.cancel();
+            r.abort.clone()
+        } else {
+            None
+        };
+        a.snapshot.blobs[i].approval = None;
+        if a.running.contains_key(id) {
+            a.snapshot.blobs[i].state = "stopping".into();
+        }
+        a.publish();
+        abort
+    };
+    let wait = async {
+        while app.lock().await.running.contains_key(id) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    if tokio::time::timeout(std::time::Duration::from_secs(2), wait)
+        .await
+        .is_err()
+    {
+        if let Some(abort) = abort {
+            abort.abort();
+        }
+        let wait = async {
+            while app.lock().await.running.contains_key(id) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+            .await
+            .context("drop is still stopping; try delete again")?;
+    }
+    let mut a = app.lock().await;
+    if let Ok(i) = a.index(id) {
+        let session = buddy_agent::session_path(&a.data.join("sessions"), id)?;
+        if session.exists() {
+            std::fs::remove_file(session)?;
+        }
+        a.snapshot.blobs.remove(i);
+        a.retiring.remove(id);
+        a.publish();
+    }
+    drop(a);
+    persist(app).await?;
+    Ok(json!({"type":"ok"}))
+}
+
+fn connection(config: &Config) -> Value {
+    let p = &config.provider[&config.active_provider];
+    json!({"base_url":p.base_url,"model":p.model,"api_key_env":p.api_key_env})
+}
+async fn configure(
+    app: &Shared,
+    base_url: String,
+    model: String,
+    api_key_env: String,
+) -> Result<Value> {
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    let model = model.trim().to_string();
+    let api_key_env = api_key_env.trim().to_string();
+    let parsed =
+        reqwest::Url::parse(&base_url).context("Enter a valid http:// or https:// endpoint URL")?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        bail!("Use an HTTP(S) endpoint without credentials, query parameters, or a fragment; put authentication in an API-key environment variable");
+    }
+    if model.is_empty() || model.len() > 256 {
+        bail!("Enter a model name (up to 256 characters)");
+    }
+    if !api_key_env.is_empty()
+        && (!api_key_env
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || api_key_env.starts_with(|c: char| c.is_ascii_digit()))
+    {
+        bail!("Enter a valid environment variable name, not an API key");
+    }
+    let (path, active, gate) = {
+        let a = app.lock().await;
+        (
+            a.config_path.clone(),
+            a.config.active_provider.clone(),
+            a.persist_gate.clone(),
+        )
+    };
+    let guard = gate.lock().await;
+    let (saved_url, saved_model, saved_env) =
+        (base_url.clone(), model.clone(), api_key_env.clone());
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut value: toml::Value = match std::fs::read_to_string(&path) {
+            Ok(s) => toml::from_str(&s)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                toml::Value::Table(Default::default())
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let table = value
+            .as_table_mut()
+            .context("Config must be a TOML table")?;
+        table.insert(
+            "active_provider".into(),
+            toml::Value::String(active.clone()),
+        );
+        let providers = table
+            .entry("provider")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .context("provider must be a TOML table")?;
+        let provider = providers
+            .entry(active)
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .context("provider entry must be a TOML table")?;
+        provider.insert("base_url".into(), toml::Value::String(saved_url));
+        provider.insert("model".into(), toml::Value::String(saved_model));
+        provider.insert("api_key_env".into(), toml::Value::String(saved_env));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let temp = path.with_extension("tmp");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(toml::to_string_pretty(&value)?.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(temp, path)?;
+        Ok(())
+    })
+    .await??;
+    let mut a = app.lock().await;
+    let active = a.config.active_provider.clone();
+    let p = a
+        .config
+        .provider
+        .get_mut(&active)
+        .context("active provider missing")?;
+    p.base_url = base_url;
+    p.model = model;
+    p.api_key_env = api_key_env;
+    a.snapshot.connection = connection(&a.config);
+    a.publish();
+    drop(a);
+    drop(guard);
+    persist(app).await?;
+    Ok(json!({"type":"ok","configured":true}))
+}
+
 async fn send(app: &Shared, id: String, text: String) -> Result<Value> {
     if text.trim().is_empty() {
         bail!("empty message");
     }
     let mut a = app.lock().await;
     let i = a.index(&id)?;
-    if a.running.contains_key(&id) {
-        bail!("blob already running");
+    if a.running.contains_key(&id) || a.retiring.contains(&id) {
+        bail!("drop is busy or being deleted");
+    }
+    if a.config.provider[&a.config.active_provider]
+        .model
+        .trim()
+        .is_empty()
+    {
+        bail!("Set the endpoint and model in Model settings first");
     }
     let placement = a.snapshot.blobs[i].placement.clone();
+    if placement["anchor"]["kind"] == "panel" {
+        bail!("place this drop on a window or workspace before chatting");
+    }
     let headless = a.headless;
     let configuration = a.config.clone();
     let session_dir = a.data.join("sessions");

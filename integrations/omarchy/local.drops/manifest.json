@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "local.drops",
+  "name": "Drops",
+  "version": "0.1.0",
+  "author": "Drops",
+  "description": "Small desktop companions: click to create, style, place or delete drops.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "BarWidget.qml"},
+  "barWidget": {
+    "displayName": "Drops",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

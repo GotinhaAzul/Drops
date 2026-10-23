@@ -110,11 +110,12 @@ def main():
             offset = next(b for b in ctl("status")["state"]["blobs"] if b["id"] == blob)["offset"]
             wait(lambda: placed()["x"] == moved["at"][0]+offset[0] and placed()["y"] == moved["at"][1]+offset[1], "blob did not follow floating window geometry")
             terminal.terminate(); terminal.wait(timeout=5); terminal = None
-            wait(lambda: placed()["anchor"]["kind"] == "workspace", "closed-window fallback failed")
+            wait(lambda: not any(b["id"]==blob for b in ctl("status")["state"]["blobs"]), "closed window did not delete its drop")
+            assert not (tmp / "data/sessions" / (blob+".jsonl")).exists()
             qlog.flush(); qlog.seek(0)
             output = qlog.read()
             assert "ReferenceError" not in output and "TypeError" not in output and "Unable to assign" not in output, output
-            print("PASS: real window hit test, connected Quickshell UI, workspace hide/return, floating movement, window-close fallback; no runtime QML errors")
+            print("PASS: real window hit test, connected Quickshell UI, workspace hide/return, floating movement, window-close deletion; no runtime QML errors")
         except Exception:
             for f in (log, qlog):
                 f.flush(); f.seek(0); print(f.read())
