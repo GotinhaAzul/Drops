@@ -73,7 +73,9 @@ fn compose_system_with(
          Your working directory is `{}`. Relative paths passed to tools resolve inside it; \
          absolute paths and symlinks that leave it are rejected.\n\
          Use the available tools instead of guessing about the filesystem. Never claim an action \
-         succeeded unless a tool result confirms it.",
+         succeeded unless a tool result confirms it.\n\
+         Keep responses short and direct: aim for 2-4 lines for simple answers, \
+         expanding only when code, steps, or explanation are needed.",
         root.display()
     );
     if tools_enabled {
