@@ -35,7 +35,7 @@ fixture = {
         "id": "fixture",
         "appearance": "drop",
         "state": "idle",
-        "placement": {"anchor": {"kind": "window", "address": "0x1"}, "x": 420, "y": 620, "visible": True, "label": "Fixture Page"},
+        "placement": {"anchor": {"kind": "window", "address": "0x1"}, "x": 420, "y": 420, "visible": True, "label": "Fixture Page"},
         "context": None,
         "approval": None,
         "history": [

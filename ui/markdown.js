@@ -354,6 +354,12 @@ function renderInline(text, options) {
             escapeHtml(code) + "</span>");
     });
 
+    // Escaped dollars are literal currency, not math delimiters. Protect them
+    // before the inline math expressions run.
+    value = value.replace(/\\\$/g, function () {
+        return token(escapeHtml("$"));
+    });
+
     value = value.replace(/\$\$([^\n]+?)\$\$/g, function (_match, tex) {
         return token(renderMath(tex, true, opt));
     });
@@ -619,7 +625,7 @@ MathParser.prototype.command = function (name) {
         case "tfrac":
             return fractionHtml(this.parseGroup(), this.parseGroup());
         case "binom":
-            return "C(" + stripTags(this.parseGroup()) + ", " + stripTags(this.parseGroup()) + ")";
+            return "C(" + this.parseGroup() + ", " + this.parseGroup() + ")";
         case "sqrt": {
             var index = this.readOptionalBracket();
             var radicand = this.parseGroup();
@@ -675,11 +681,8 @@ MathParser.prototype.command = function (name) {
             return this.parseGroup() + "\u0308";
         case "bar":
             return this.parseGroup() + "\u0304";
-        case "not": {
-            var negated = this.parseAtom();
-            var plain = stripTags(negated);
-            return plain ? plain + "\u0338" : negated;
-        }
+        case "not":
+            return this.parseAtom() + "\u0338";
         case "left":
         case "right":
         case "middle":

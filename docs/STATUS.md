@@ -17,7 +17,7 @@ This is the initial Drops build. The feature inventory below separates code from
 
 ## Executed verification
 
-- 257 Rust tests pass, plus 35 Python text-capture checks, 22 Markdown/LaTeX renderer cases and fake-compositor/QML checks. Capture covers lock refusal, geometry/occlusion, bounded subprocesses, image gating, multimodal recovery, on-demand full text, window identity checks and state scrubbing.
+- 257 Rust tests pass, plus 35 Python text-capture checks, 25 Markdown/LaTeX renderer cases and fake-compositor/QML checks. Capture covers lock refusal, geometry/occlusion, bounded subprocesses, image gating, multimodal recovery, on-demand full text, window identity checks and state scrubbing.
 - Workspace Clippy passes with `-D warnings`; formatting is clean.
 - Failure-path integration verifies same-bridge cancellation during slow capture, pending-session fences, disk-save recovery, startup anchor refresh, retained offsets, graceful external-tool shutdown and strict-endpoint continuation after interrupted calls.
 - Headless integration passes streaming tool continuation, exact approval gating, denial, cancellation during approval, busy-session guards, file changes, context inspection, export/fork/clear, blob cap, malformed IPC, restart persistence and socket permissions.

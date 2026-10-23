@@ -47,6 +47,9 @@ def main():
         "text": "$\\text{hello world} + 1$",
         "blackboard": "$\\mathbb{R}^n$ and $\\mathcal{L}$",
         "currency": "Cost $10 and $20.",
+        "escaped_currency": "Price \\$5 and \\$10.",
+        "binom_html": "$\\binom{\\text{<img src=\"https://example.com/track.png\">}}{k}$",
+        "not_html": "$\\not{\\text{<img src=\"https://example.com/track.png\">}}$",
         "escapes": "\\*not italic\\* and **bold**",
         "line_break": "one\\\ntwo",
         "code_literal": "`<b>**not**</b>`",
@@ -94,6 +97,10 @@ def main():
     assert "ℝⁿ" in result["blackboard"] and "ℒ" in result["blackboard"]
 
     assert "$10" in result["currency"] and "$20" in result["currency"]
+    assert "$5" in result["escaped_currency"] and "$10" in result["escaped_currency"]
+    assert "\\5" not in result["escaped_currency"] and "\\10" not in result["escaped_currency"]
+    assert "&lt;img" in result["binom_html"] and "<img" not in result["binom_html"]
+    assert "&lt;img" in result["not_html"] and "<img" not in result["not_html"]
     assert "<i>" not in result["escapes"] and "not italic" in result["escapes"]
     assert "<b>bold</b>" in result["escapes"]
     assert "<br/>" in result["line_break"]
