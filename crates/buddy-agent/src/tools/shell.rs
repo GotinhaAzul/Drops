@@ -141,6 +141,7 @@ mod tests {
             root,
             allow_shell,
             skills: Vec::new(),
+            writes: Default::default(),
         };
         (temp, ctx)
     }
@@ -193,6 +194,7 @@ mod tests {
                     root: ctx_root,
                     allow_shell: true,
                     skills: Vec::new(),
+                    writes: Default::default(),
                 };
                 bash(
                     &ctx,
@@ -242,6 +244,7 @@ mod tests {
                     root: ctx_root,
                     allow_shell: true,
                     skills: Vec::new(),
+                    writes: Default::default(),
                 };
                 bash(
                     &ctx,

@@ -61,16 +61,23 @@ pub(crate) fn tool_result(
 /// `arguments` is the exact value the model produced (after JSON decoding), not
 /// a summary. The UI must answer with exactly one `bool` on the approvals
 /// channel; anything else (closed channel, missing answer) denies.
-pub(crate) fn approval(events: &UnboundedSender<Value>, name: &str, arguments: &Value, risk: &str) {
-    send(
-        events,
-        json!({
-            "type": "approval",
-            "name": name,
-            "arguments": arguments,
-            "risk": risk,
-        }),
-    );
+pub(crate) fn approval(
+    events: &UnboundedSender<Value>,
+    name: &str,
+    arguments: &Value,
+    risk: &str,
+    preview: Option<&Value>,
+) {
+    let mut event = json!({
+        "type": "approval",
+        "name": name,
+        "arguments": arguments,
+        "risk": risk,
+    });
+    if let Some(preview) = preview {
+        event["preview"] = preview.clone();
+    }
+    send(events, event);
 }
 
 pub(crate) fn error(events: &UnboundedSender<Value>, text: impl Into<String>) {

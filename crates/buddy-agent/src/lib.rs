@@ -15,6 +15,7 @@
 mod attachments;
 mod context_files;
 mod events;
+mod memory;
 mod paths;
 mod provider;
 mod session;
@@ -214,6 +215,12 @@ pub async fn run(
     // interleave partial JSONL lines. The guard lives for the whole run.
     let _session_guard = session::lock(log.path()).await;
 
+    // Memory is part of this session file: fork copies it, clear/remove deletes
+    // it, restart reloads it. Workspace or anchor changes invalidate scoped
+    // entries before the model sees them.
+    let memory = std::sync::Arc::new(memory::MemoryStore::load(log.clone()));
+    memory.observe(&root, &context);
+
     let skills = context_files::discover_skills(&root);
     let registry = ToolRegistry::new(
         root.clone(),
@@ -221,13 +228,15 @@ pub async fn run(
         config.context_tools.clone(),
         config.external_tools.clone(),
         skills.clone(),
-    );
+    )
+    .with_memory(memory.clone());
 
     let mut engine = Engine {
         config,
         root,
         log,
         registry,
+        memory,
         skills,
         messages: Vec::new(),
         context,
@@ -249,6 +258,7 @@ struct Engine {
     root: PathBuf,
     log: SessionLog,
     registry: ToolRegistry,
+    memory: Arc<memory::MemoryStore>,
     skills: Vec<Skill>,
     messages: Vec<Value>,
     context: Value,
@@ -360,7 +370,15 @@ impl Engine {
         for message in &repaired.appended {
             self.log.append_message(message)?;
         }
-        let history = session::trim_history(repaired.messages);
+        // A fresh context bundle is authoritative. Older context snapshots may
+        // describe a different window, directory or capture; replaying them
+        // invites stale paths and stale claims. Keep them in the JSONL export
+        // but omit them from the model's history while a current bundle exists.
+        let mut history = repaired.messages;
+        if !session::is_empty_context(&self.context) {
+            history.retain(|message| !attachments::is_context_message(message));
+        }
+        let history = session::trim_history(history);
         self.messages.extend(history);
 
         if !session::is_empty_context(&self.context) {
@@ -375,7 +393,22 @@ impl Engine {
         Ok(())
     }
 
+    /// Replace the synthetic memory system message with the current snapshot.
+    /// It is injected per model turn (including after a `task_memory` call) and
+    /// is never written to the session log as conversation history.
+    fn refresh_memory_prompt(&mut self) {
+        self.messages
+            .retain(|message| message.get("drops_memory").is_none());
+        if let Some(section) = self.memory.system_section() {
+            self.messages.insert(
+                1.min(self.messages.len()),
+                json!({"role": "system", "content": section, "drops_memory": true}),
+            );
+        }
+    }
+
     async fn model_turn(&mut self) -> Result<Value> {
+        self.refresh_memory_prompt();
         let definitions = if self.config.provider.tools {
             self.registry.definitions()
         } else {
@@ -505,9 +538,30 @@ impl Engine {
             };
         };
 
+        if let Err(error) = tool.validate_arguments(&arguments) {
+            return CallOutcome::Finished {
+                content: format!("Invalid arguments for `{name}`: {error}. Correct the arguments and re-issue the call. No action was performed."),
+                is_error: true,
+            };
+        }
+
         let risk = tool.risk();
         if risk.requires_approval() {
-            match self.approval(name, &arguments, risk).await {
+            // Build a concrete, read-only preview before asking. A file change
+            // that cannot apply (missing target, stale expected content, bad
+            // match) is reported now, without an approval prompt or mutation.
+            let preview = match self.registry.preview(&tool, &arguments) {
+                Ok(preview) => preview,
+                Err(error) => {
+                    return CallOutcome::Finished {
+                        content: format!(
+                            "Cannot prepare `{name}`: {error}. No approval was requested and no changes were made."
+                        ),
+                        is_error: true,
+                    }
+                }
+            };
+            match self.approval(name, &arguments, risk, preview.as_ref()).await {
                 Approval::Approved => {}
                 Approval::Denied => {
                     return CallOutcome::Finished {
@@ -531,8 +585,14 @@ impl Engine {
         }
     }
 
-    async fn approval(&mut self, name: &str, arguments: &Value, risk: Risk) -> Approval {
-        events::approval(&self.events, name, arguments, risk.as_str());
+    async fn approval(
+        &mut self,
+        name: &str,
+        arguments: &Value,
+        risk: Risk,
+        preview: Option<&Value>,
+    ) -> Approval {
+        events::approval(&self.events, name, arguments, risk.as_str(), preview);
         tokio::select! {
             _ = self.cancel.cancelled() => Approval::Cancelled,
             answer = self.approvals.recv() => match answer {
@@ -866,8 +926,13 @@ mod tests {
                 turn += 1;
                 assert!(tools.iter().any(|tool| tool["function"]["name"] == name));
                 if turn == 1 {
-                    // Invalid arguments would fail validation if execution happened.
-                    Ok(call("web1", name, json!({})))
+                    // Well-typed arguments that fail semantic validation if executed.
+                    let args = if name == "web_search" {
+                        json!({"query":" "})
+                    } else {
+                        json!({"url":"not-a-url"})
+                    };
+                    Ok(call("web1", name, args))
                 } else {
                     Ok(text("Stopped after denial"))
                 }
@@ -1007,6 +1072,7 @@ mod tests {
         assert!(tool_result["text"].as_str().unwrap().contains("denied"));
 
         assert!(!config.project_dir.join("new.txt").exists());
+        assert!(!config.project_dir.join(".drops/backups").exists());
         let messages = history(&config, "denied");
         let tool_message = messages
             .iter()
@@ -1058,6 +1124,68 @@ mod tests {
         );
         assert!(config.project_dir.join("a.txt").is_file());
         assert!(!config.project_dir.join("b.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn invalid_mutation_is_rejected_before_approval_then_overview_can_run() {
+        let (_temp, config) = setup(5);
+        std::fs::write(config.project_dir.join("README.md"), "Project orientation").unwrap();
+        let mut turn = 0;
+        let _mock = test_support::install(move |messages, tools| {
+            turn += 1;
+            match turn {
+                1 => Ok(call(
+                    "invalid",
+                    "write",
+                    json!({"path":"oops.txt", "content":42}),
+                )),
+                2 => {
+                    assert!(tools
+                        .iter()
+                        .any(|t| t["function"]["name"] == "workspace_overview"));
+                    assert!(messages.last().unwrap()["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Invalid arguments"));
+                    Ok(call("overview", "workspace_overview", json!({})))
+                }
+                _ => {
+                    assert!(messages.last().unwrap()["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Project orientation"));
+                    Ok(text("oriented"))
+                }
+            }
+        });
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = mpsc::unbounded_channel();
+        run(
+            config.clone(),
+            "overview".into(),
+            "inspect project".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let events = drain(rx);
+        assert!(!event_types(&events).contains(&"approval"));
+        assert!(!config.project_dir.join("oops.txt").exists());
+        let results: Vec<_> = events
+            .iter()
+            .filter(|e| e["type"] == "tool_result")
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["is_error"], true);
+        assert_eq!(results[1]["is_error"], false);
+        assert_eq!(
+            history(&config, "overview").last().unwrap()["content"],
+            "oriented"
+        );
     }
 
     #[tokio::test]
@@ -1744,5 +1872,361 @@ mod tests {
             assert!(reply["content"].as_str().unwrap().contains("cancelled"));
         }
         strict_history(&config, "cancelbatch");
+    }
+
+    #[tokio::test]
+    async fn fresh_context_supersedes_old_snapshots_upstream() {
+        let (_temp, config) = setup(2);
+        seed(
+            &config,
+            "fresh",
+            &[
+                json!({"role":"user","content":"Context for this request (JSON):\n{\"window\":{\"title\":\"old-window\"}}"}),
+                json!({"role":"user","content":"earlier question"}),
+                json!({"role":"assistant","content":"earlier answer"}),
+            ],
+        );
+        let _mock = test_support::install(|messages, _tools| {
+            let contexts: Vec<_> = messages
+                .iter()
+                .filter(|message| message["role"] == "user")
+                .filter(|message| {
+                    message["content"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("Context for this request (JSON):"))
+                })
+                .collect();
+            assert_eq!(contexts.len(), 1, "stale context must not be replayed");
+            assert!(contexts[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("new-window"));
+            assert!(!contexts[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("old-window"));
+            Ok(text("ok"))
+        });
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = mpsc::unbounded_channel();
+        run(
+            config.clone(),
+            "fresh".into(),
+            "follow up".into(),
+            json!({"brief":{"anchor":{"title":"new-window"}}}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let exported =
+            std::fs::read_to_string(session_path(&config.session_dir, "fresh").unwrap()).unwrap();
+        assert!(
+            exported.contains("old-window"),
+            "export keeps historical snapshots"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_approval_includes_a_diff_and_denial_creates_no_backup() {
+        let (_temp, config) = setup(4);
+        std::fs::write(config.project_dir.join("note.txt"), "one two\n").unwrap();
+        let mut turn = 0;
+        let _mock = test_support::install(move |_messages, _tools| {
+            turn += 1;
+            match turn {
+                1 => Ok(call(
+                    "e1",
+                    "edit",
+                    json!({"path":"note.txt","old_string":"two","new_string":"TWO"}),
+                )),
+                _ => Ok(text("stopped")),
+            }
+        });
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = approvals(vec![false]);
+        run(
+            config.clone(),
+            "preview-denied".into(),
+            "edit note".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let events = drain(rx);
+        let approval = events
+            .iter()
+            .find(|event| event["type"] == "approval")
+            .expect("approval event");
+        let diff = approval["preview"]["diff"].as_str().unwrap();
+        assert!(diff.contains("-one two"), "{diff}");
+        assert!(diff.contains("+one TWO"), "{diff}");
+        assert_eq!(
+            std::fs::read_to_string(config.project_dir.join("note.txt")).unwrap(),
+            "one two\n"
+        );
+        assert!(!config.project_dir.join(".drops/backups").exists());
+    }
+
+    #[tokio::test]
+    async fn stale_read_during_approval_delay_is_refused_without_mutation() {
+        let (_temp, config) = setup(5);
+        let path = config.project_dir.join("note.txt");
+        std::fs::write(&path, "one two\n").unwrap();
+        let mut turn = 0;
+        let _mock = test_support::install(move |_messages, _tools| {
+            turn += 1;
+            match turn {
+                1 => Ok(call("r1", "read", json!({"path":"note.txt"}))),
+                2 => Ok(call(
+                    "e1",
+                    "edit",
+                    json!({"path":"note.txt","old_string":"two","new_string":"TWO"}),
+                )),
+                _ => Ok(text("handled")),
+            }
+        });
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (approval_tx, approval_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(run(
+            config.clone(),
+            "approval-delay".into(),
+            "edit after read".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        ));
+        let path_for_edit = path.clone();
+        let approval = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = rx.recv().await {
+                if event["type"] == "approval" {
+                    return event;
+                }
+            }
+            panic!("approval channel closed");
+        })
+        .await
+        .unwrap();
+        assert_eq!(approval["name"], "edit");
+        // A different process (or the user) changes the file while the prompt
+        // is waiting. Approval must not overwrite that newer content.
+        std::fs::write(&path_for_edit, "changed during approval\n").unwrap();
+        approval_tx.send(true).unwrap();
+        task.await.unwrap().unwrap();
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        let result = events
+            .iter()
+            .find(|event| event["type"] == "tool_result" && event["name"] == "edit")
+            .unwrap();
+        assert_eq!(result["is_error"], true);
+        assert!(result["text"]
+            .as_str()
+            .unwrap()
+            .contains("changed after it was read"));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "changed during approval\n"
+        );
+        assert!(!config.project_dir.join(".drops/backups").exists());
+    }
+
+    #[tokio::test]
+    async fn approved_create_refuses_a_file_that_appeared_during_approval() {
+        let (_temp, config) = setup(4);
+        let path = config.project_dir.join("new.txt");
+        let mut turn = 0;
+        let _mock = test_support::install(move |_messages, _tools| {
+            turn += 1;
+            if turn == 1 {
+                Ok(call(
+                    "create",
+                    "write",
+                    json!({"path":"new.txt", "content":"approved content"}),
+                ))
+            } else {
+                Ok(text("handled"))
+            }
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (approval_tx, approval_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(run(
+            config.clone(),
+            "create-race".into(),
+            "create new.txt".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        ));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = rx.recv().await {
+                if event["type"] == "approval" {
+                    return;
+                }
+            }
+            panic!("no approval event");
+        })
+        .await
+        .unwrap();
+        std::fs::write(&path, "created independently").unwrap();
+        approval_tx.send(true).unwrap();
+        task.await.unwrap().unwrap();
+        let events = drain(rx);
+        assert!(events
+            .iter()
+            .any(|event| event["type"] == "tool_result" && event["is_error"] == true));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "created independently"
+        );
+        assert!(!config.project_dir.join(".drops/backups").exists());
+    }
+
+    #[tokio::test]
+    async fn task_memory_is_injected_and_persisted_for_the_next_run() {
+        let (_temp, config) = setup(5);
+        let mut turn = 0;
+        let _mock = test_support::install(move |messages, tools| {
+            turn += 1;
+            match turn {
+                1 => {
+                    assert!(tools
+                        .iter()
+                        .any(|tool| tool["function"]["name"] == "task_memory"));
+                    Ok(call(
+                        "m1",
+                        "task_memory",
+                        json!({"action":"update","goal":"Fix the build",
+                            "pending":[{"text":"Run workspace tests"}],
+                            "verified":[{"text":"Reproduced the failure","evidence":"read src/main.rs"}]}),
+                    ))
+                }
+                2 => {
+                    let memory = messages
+                        .iter()
+                        .find(|message| {
+                            message["role"] == "system"
+                                && message["content"]
+                                    .as_str()
+                                    .is_some_and(|text| text.contains("Session task memory"))
+                        })
+                        .expect("memory system message");
+                    assert!(memory["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Fix the build"));
+                    Ok(text("remembered"))
+                }
+                _ => Ok(text("done")),
+            }
+        });
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = mpsc::unbounded_channel();
+        run(
+            config.clone(),
+            "memory-run".into(),
+            "remember the task".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let log = std::fs::read_to_string(session_path(&config.session_dir, "memory-run").unwrap())
+            .unwrap();
+        assert!(log.contains("\"type\":\"memory\""), "{log}");
+        assert!(log.contains("Fix the build"), "{log}");
+
+        let _mock = test_support::install(|messages, _tools| {
+            let memory = messages
+                .iter()
+                .find(|message| {
+                    message["role"] == "system"
+                        && message["content"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("Session task memory"))
+                })
+                .expect("restart must reload memory");
+            assert!(memory["content"]
+                .as_str()
+                .unwrap()
+                .contains("Fix the build"));
+            Ok(text("continued"))
+        });
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = mpsc::unbounded_channel();
+        run(
+            config.clone(),
+            "memory-run".into(),
+            "continue".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn task_memory_does_not_leak_into_an_independent_drop() {
+        let (_temp, config) = setup(3);
+        std::fs::create_dir_all(&config.session_dir).unwrap();
+        let first = session_path(&config.session_dir, "first").unwrap();
+        let log = crate::session::SessionLog::new(first);
+        log.ensure_header("first", &config.project_dir).unwrap();
+        log.append_value(&json!({"type":"memory","memory":{
+            "goal":"Only the first drop",
+            "decisions":[],"pending":[],"verified":[]
+        }}))
+        .unwrap();
+
+        let _mock = test_support::install(|messages, _tools| {
+            let has_memory = messages.iter().any(|message| {
+                message["role"] == "system"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("Session task memory"))
+            });
+            assert!(!has_memory, "a new session must start with empty memory");
+            Ok(text("fresh"))
+        });
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = mpsc::unbounded_channel();
+        run(
+            config,
+            "second".into(),
+            "hello".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
     }
 }

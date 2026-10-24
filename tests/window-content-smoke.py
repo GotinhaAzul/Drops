@@ -287,6 +287,10 @@ def main():
                 assert state["blobs"][0]["state"] == "idle", json.dumps(state)
                 assert state["blobs"][0]["context"]["content"]["text"] == "preview alpha"
                 assert state["blobs"][0]["context"]["content"]["full"]["status"] == "on-demand"
+                brief = state["blobs"][0]["context"]["brief"]
+                assert brief["content"]["text_chars"] == len("preview alpha"), brief
+                assert brief["content"]["sources"] == state["blobs"][0]["context"]["content"]["sources"], brief
+                assert brief["content"]["full_text"]["status"] == "on-demand", brief
                 assert len(requests) == 3, len(requests)
                 assert len(capture_counter.read_text().splitlines()) == 2, (
                     "expected one preview and one cached deep capture"

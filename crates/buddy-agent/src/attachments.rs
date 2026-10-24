@@ -39,6 +39,23 @@ pub(crate) fn context_message(context: &Value, vision: bool) -> Value {
     }
 }
 
+/// True for a context bundle message recorded by an earlier turn.
+///
+/// The engine keeps these in the JSONL log for export and inspection, but
+/// omits them from model history when a fresh bundle exists so an old window
+/// snapshot cannot dominate a follow-up request.
+pub(crate) fn is_context_message(message: &Value) -> bool {
+    let text = match message.get("content") {
+        Some(Value::String(text)) => Some(text.as_str()),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .find(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+            .and_then(|part| part.get("text").and_then(Value::as_str)),
+        _ => None,
+    };
+    text.is_some_and(|text| text.starts_with(CONTEXT_PREFIX))
+}
+
 /// A provider switch must not forward historical image parts to a text model.
 pub(crate) fn for_provider(mut message: Value, vision: bool) -> Value {
     if !vision {

@@ -125,10 +125,50 @@ pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     }
 }
 
+/// Open without waiting on FIFOs, verify the opened object, and cap the actual
+/// read (metadata alone does not bound a file that grows during the read).
+pub(crate) fn read_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        bail!("target must be a regular file");
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes as u64 + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn bounded_read_never_loads_more_than_limit_plus_one() {
+        let temp = TempDir::new();
+        let file = temp.path().join("large");
+        std::fs::write(&file, vec![b'x'; 100_000]).unwrap();
+        assert_eq!(read_bounded(&file, 100).unwrap().len(), 101);
+        assert!(read_bounded(temp.path(), 100).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_read_rejects_fifo_without_waiting_for_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        let temp = TempDir::new();
+        let path = temp.path().join("fifo");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(read_bounded(&path, 100).is_err());
+    }
 
     #[test]
     fn resolves_relative_paths_inside_root() {

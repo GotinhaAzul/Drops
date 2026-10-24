@@ -963,6 +963,10 @@ async fn send(app: &Shared, id: String, text: String) -> Result<Value> {
                     ));
                 }
             }
+            // One compact, current brief for this turn. It only condenses
+            // evidence already gathered; it never reads extra files or grants
+            // capability. Older context snapshots are not replayed upstream.
+            context["brief"] = buddy_anchor::brief::build(&context);
             let _ = etx.send(json!({"type":"context","context":context}));
             let mut allow_shell = !headless && buddy_anchor::workspace::is_terminal(
                 context["window"]["class"].as_str().unwrap_or("")

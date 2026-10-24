@@ -73,6 +73,7 @@ mod tests {
             root: crate::paths::canonical_root(temp.path()).unwrap(),
             allow_shell: false,
             skills: vec![],
+            writes: Default::default(),
         };
         let source = ctx.root.join("note.docx");
         let generated = std::process::Command::new("python3").args(["-I","-c",r#"

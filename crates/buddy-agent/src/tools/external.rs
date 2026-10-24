@@ -276,6 +276,7 @@ mod tests {
             root,
             allow_shell: true,
             skills: Vec::new(),
+            writes: Default::default(),
         };
         (temp, ctx)
     }

@@ -28,6 +28,7 @@
 //! Only `hyprctl -j` queries and a socket2 connection are used. No dispatch
 //! commands run, no configuration is written, and no desktop setting changes.
 
+pub mod brief;
 pub mod bundle;
 pub mod capture;
 mod error;

@@ -65,6 +65,7 @@ pub(crate) async fn lock(path: &Path) -> OwnedMutexGuard<()> {
 }
 
 /// Append-only session log.
+#[derive(Clone)]
 pub(crate) struct SessionLog {
     path: PathBuf,
 }
@@ -132,6 +133,12 @@ impl SessionLog {
             }
         }
         Ok(messages)
+    }
+
+    /// Append one typed bookkeeping record (for example task memory) next to
+    /// the conversation messages. Loaders ignore record types they do not own.
+    pub(crate) fn append_value(&self, value: &Value) -> Result<()> {
+        self.append(value)
     }
 
     pub(crate) fn append_message(&self, message: &Value) -> Result<()> {

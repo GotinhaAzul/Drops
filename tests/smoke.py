@@ -28,10 +28,21 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         messages = body["messages"]
-        has_result = any(m.get("role") == "tool" for m in messages)
+        has_result = bool(messages) and messages[-1].get("role") == "tool"
         prompt = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
         filename = "cancelled.txt" if "cancel" in prompt else "denied.txt" if "deny" in prompt else "note.txt"
-        tool = {"index": 0, "id": "call_smoke", "type": "function", "function": {"name": "write", "arguments": json.dumps({"path": filename, "content": "approved by smoke test\n"})}}
+        if "remember" in prompt:
+            tool = {"index": 0, "id": "call_memory", "type": "function", "function": {
+                "name": "task_memory",
+                "arguments": json.dumps({
+                    "action": "update",
+                    "goal": prompt,
+                    "pending": [{"text": "Finish the smoke check"}],
+                    "verified": [{"text": "Mock endpoint reached", "evidence": "request received"}],
+                }),
+            }}
+        else:
+            tool = {"index": 0, "id": "call_smoke", "type": "function", "function": {"name": "write", "arguments": json.dumps({"path": filename, "content": "approved by smoke test\n"})}}
         delta = {"content": "Hello from the mock endpoint.", "reasoning_content": "The file write succeeded."} if has_result else {"tool_calls": [tool]}
         events = [{"choices": [{"index": 0, "delta": delta, "finish_reason": None}]}, {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}]
         payload = "".join("data: " + json.dumps(e) + "\n\n" for e in events) + "data: [DONE]\n\n"
@@ -95,7 +106,10 @@ def main():
                 messages = [json.loads(line).get("message", {}) for line in exported.splitlines() if line.strip()]
                 assert any(message.get("reasoning_content") == "The file write succeeded." for message in messages)
                 assert len(requests) == 2
-                assert ctl("context", blob)["context"]["mode"] == "headless"
+                inspected = ctl("context", blob)["context"]
+                assert inspected["mode"] == "headless"
+                assert inspected["brief"]["anchor"]["kind"] == "headless", inspected["brief"]
+                assert inspected["brief"]["freshness"]["state"] == "captured-this-turn"
                 assert ctl("export", blob)["jsonl"]
                 fork = ctl("fork", blob)["id"]
                 assert ctl("export", fork)["jsonl"] == ctl("export", blob)["jsonl"]
@@ -116,6 +130,17 @@ def main():
                 ctl("confirm", second, "--deny")
                 wait(lambda s: next(b for b in s["blobs"] if b["id"] == second)["state"] == "idle")
                 assert not (project / "denied.txt").exists()
+                # Task memory is session-scoped, exported with the JSONL, copied
+                # by fork and deleted by clear.
+                ctl("send", blob, "remember the release plan")
+                wait(lambda s: next(b for b in s["blobs"] if b["id"] == blob)["state"] == "idle")
+                exported = ctl("export", blob)["jsonl"]
+                assert '"type":"memory"' in exported, exported
+                assert "remember the release plan" in exported
+                memory_fork = ctl("fork", blob)["id"]
+                assert "remember the release plan" in ctl("export", memory_fork)["jsonl"]
+                ctl("remove", memory_fork)
+                assert not (base / "data/sessions" / (memory_fork + ".jsonl")).exists()
                 ctl("clear", blob)
                 assert not ctl("export", blob)["jsonl"]
                 # Malformed input must not kill the daemon.
@@ -127,6 +152,8 @@ def main():
                 assert next(b for b in status()["blobs"] if b["id"] == second)["state"] == "idle"
                 ctl("cancel")
                 assert len(status()["blobs"]) == 2
+                ctl("send", second, "remember the restart state")
+                wait(lambda s: next(b for b in s["blobs"] if b["id"] == second)["state"] == "idle")
                 daemon.send_signal(signal.SIGINT)
                 assert daemon.wait(timeout=5) == 0
                 # Simulate stale UI metadata left by a mid-turn crash. JSONL is
@@ -146,6 +173,7 @@ def main():
                 recovered = next(b for b in restarted["blobs"] if b["id"] == second)
                 assert recovered["context"]["mode"] == "headless"
                 assert "deny this pending action" in json.dumps(recovered["history"])
+                assert "remember the restart state" in ctl("export", second)["jsonl"]
                 private_env = {k:v for k,v in env.items() if k not in ("DROPS_SOCKET", "XDG_RUNTIME_DIR")}
                 refused = subprocess.run([str(BIN / "buddyctl"), "status"], env=private_env, capture_output=True, text=True)
                 assert refused.returncode != 0 and "explicit private" in refused.stderr

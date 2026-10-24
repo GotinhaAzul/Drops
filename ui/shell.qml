@@ -720,8 +720,9 @@ ShellRoot {
                             width:parent.width;height:72;clip:true;contentWidth:availableWidth
                             TextArea {
                                 width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere
+                                objectName:"approval-details-"+(bubble.blob ? bubble.blob.id : "")
                                 textFormat:TextEdit.PlainText;color:root.ink;font.pixelSize:10
-                                text:bubble.blob && bubble.blob.approval ? JSON.stringify(bubble.blob.approval,null,2) : ""
+                                text:bubble.blob && bubble.blob.approval ? (bubble.blob.approval.preview && bubble.blob.approval.preview.diff ? bubble.blob.approval.preview.diff : JSON.stringify(bubble.blob.approval,null,2)) : ""
                             }
                         }
                         Row {
