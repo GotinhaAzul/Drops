@@ -813,7 +813,7 @@ fn connection(config: &Config) -> Value {
                 "base_url": buddy_ai::OPENCODE_GO_BASE_URL,
                 "model": "",
                 "api_key_env": buddy_ai::OPENCODE_GO_API_KEY_ENV,
-                "has_api_key": false,
+                "has_api_key": environment_key_present(buddy_ai::OPENCODE_GO_API_KEY_ENV),
                 "vision": false,
             })
         });
@@ -1555,6 +1555,19 @@ mod tests {
         assert_eq!(connection["has_api_key"], true);
         assert_eq!(connection["custom"]["model"], "qwen");
         assert_eq!(connection["opencode_go"]["model"], "kimi-k3");
+    }
+
+    #[test]
+    fn connection_reports_the_environment_key_before_opencode_go_is_saved() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var(buddy_ai::OPENCODE_GO_API_KEY_ENV, "env-secret-key");
+        let config = test_config();
+        let summary = connection(&config);
+        assert_eq!(summary["opencode_go"]["has_api_key"], true);
+        assert_eq!(summary["opencode_go"]["model"], "");
+        assert!(!summary.to_string().contains("env-secret-key"));
+        std::env::remove_var(buddy_ai::OPENCODE_GO_API_KEY_ENV);
+        assert_eq!(connection(&config)["opencode_go"]["has_api_key"], false);
     }
 
     #[test]
