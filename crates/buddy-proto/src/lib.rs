@@ -3,6 +3,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub const MAX_BLOBS: usize = 3;
 pub const MAX_FRAME: usize = 1024 * 1024;
+
+/// An API key carried over IPC.
+///
+/// `Debug` is always redacted so a log line cannot expose the key, while
+/// serde keeps the wire format a plain JSON string.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ApiKey(String);
+
+impl ApiKey {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
@@ -14,16 +39,31 @@ pub enum Command {
         enabled: bool,
     },
     Configure {
-        base_url: String,
-        model: String,
+        /// `custom` keeps the original endpoint fields; `opencode_go` uses the
+        /// Opencode Go gateway, its model list, and a stored key.
         #[serde(default)]
-        api_key_env: String,
+        mode: Option<String>,
+        #[serde(default)]
+        base_url: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        api_key_env: Option<String>,
+        /// New key to store. Omitted or empty keeps the saved Opencode Go key.
+        #[serde(default)]
+        api_key: Option<ApiKey>,
         #[serde(default)]
         vision: Option<bool>,
         #[serde(default)]
         capture_content: Option<bool>,
         #[serde(default)]
         screenshots: Option<bool>,
+    },
+    /// Fetch the active Opencode Go model list. `api_key` lets the settings
+    /// screen test a key before saving it.
+    Models {
+        #[serde(default)]
+        api_key: Option<ApiKey>,
     },
     Create {
         #[serde(default)]
@@ -141,4 +181,43 @@ pub fn validate_socket_environment() -> std::io::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_keys_are_redacted_in_command_debug_output() {
+        let command = Command::Configure {
+            mode: Some("opencode_go".into()),
+            base_url: None,
+            model: Some("kimi-k3".into()),
+            api_key_env: None,
+            api_key: Some(ApiKey::new("super-secret-key")),
+            vision: None,
+            capture_content: None,
+            screenshots: None,
+        };
+        let debug = format!("{command:?}");
+        assert!(!debug.contains("super-secret-key"));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn api_keys_stay_plain_strings_on_the_wire() {
+        let command: Command =
+            serde_json::from_str(r#"{"type":"models","api_key":"wire-secret"}"#).expect("command");
+        let Command::Models { api_key } = command else {
+            panic!("expected models");
+        };
+        assert_eq!(api_key.expect("key").expose(), "wire-secret");
+        assert_eq!(
+            serde_json::to_value(Command::Models {
+                api_key: Some(ApiKey::new("wire-secret"))
+            })
+            .expect("serialize"),
+            serde_json::json!({"type":"models","api_key":"wire-secret"})
+        );
+    }
 }

@@ -31,14 +31,53 @@ ShellRoot {
     property var chatViews: ({})
     property var seenResponses: ({})
     property bool responseHistoryInitialized: false
+    property string connectionMode: "custom"
+    property var opencodeModels: []
+    property string opencodeSelected: ""
+    property bool loadingModels: false
     function loadSettings() {
         const c=state.connection || ({})
-        endpoint.text=c.base_url || "http://127.0.0.1:11434/v1"
-        modelName.text=c.model || ""
-        keyEnv.text=c.api_key_env || ""
-        visionMode.checked=!!c.vision
+        const custom=c.custom || c
+        const go=c.opencode_go || ({})
+        endpoint.text=custom.base_url || "http://127.0.0.1:11434/v1"
+        modelName.text=custom.model || ""
+        keyEnv.text=custom.api_key_env || ""
+        opencodeSelected=go.model || ""
+        opencodeModels=opencodeSelected ? [opencodeSelected] : []
+        opencodeKey.text=""
+        opencodeKey.placeholderText=go.has_api_key ? "Key available — leave blank to keep" : "Paste your Opencode Go API key"
+        connectionMode=c.mode==="opencode_go" ? "opencode_go" : "custom"
+        visionMode.checked=!!(connectionMode==="opencode_go" ? go.vision : custom.vision)
         contentCapture.checked=c.capture_content!==false
         screenCapture.checked=c.screenshots!==false
+        loadingModels=false
+    }
+    function selectConnectionMode(index) {
+        const mode=index===1 ? "opencode_go" : "custom"
+        if (mode===connectionMode) return
+        connectionMode=mode
+        const c=state.connection || ({})
+        const saved=mode==="opencode_go" ? (c.opencode_go || ({})) : (c.custom || ({}))
+        visionMode.checked=!!saved.vision
+    }
+    function opencodeHasKey() {
+        const go=state.connection && state.connection.opencode_go || ({})
+        return opencodeKey.text.trim().length>0 || !!go.has_api_key
+    }
+    function loadModels() {
+        if (!connected) {failure="Drops is reconnecting…";return}
+        failure="";loadingModels=true
+        send({type:"models",api_key:opencodeKey.text})
+    }
+    function saveConnection() {
+        const vision=visionMode.checked
+        const capture_content=contentCapture.checked
+        const screenshots=screenCapture.checked
+        if (connectionMode==="opencode_go") {
+            send({type:"configure",mode:"opencode_go",model:opencodeSelected,api_key:opencodeKey.text,vision:vision,capture_content:capture_content,screenshots:screenshots})
+        } else {
+            send({type:"configure",mode:"custom",base_url:endpoint.text,model:modelName.text,api_key_env:keyEnv.text,vision:vision,capture_content:capture_content,screenshots:screenshots})
+        }
     }
     property bool chatOpen: false
     property bool capturing: state.blobs.some(b=>b.state==="capturing")
@@ -298,9 +337,17 @@ ShellRoot {
                         root.selectedId=msg.id;root.recentDropId=msg.id;recentTimer.restart()
                         if(root.autoChatPending){root.autoChatPending=false;root.autoChatId=msg.id;autoChatTimer.restart()}
                     }
-                    else if(msg.type==="ok" && msg.configured) {root.settingsOpen=false;root.failure=""}
+                    else if(msg.type==="ok" && msg.configured) {root.settingsOpen=false;root.loadingModels=false;root.opencodeKey.text="";root.failure=""}
+                    else if(msg.type==="models") {
+                        root.loadingModels=false
+                        let models=Array.isArray(msg.models) ? msg.models.slice() : []
+                        if(root.opencodeSelected && models.indexOf(root.opencodeSelected)<0) models.unshift(root.opencodeSelected)
+                        root.opencodeModels=models
+                        if(!root.opencodeSelected && models.length>0) root.opencodeSelected=models[0]
+                        root.failure=models.length>0 ? "" : "The gateway returned no models."
+                    }
                     else if (msg.type === "preview" && root.dragging) {root.preview=msg.geometry ? msg : null;root.failure=""}
-                    else if (msg.type === "error") root.failure=msg.message
+                    else if (msg.type === "error") {root.loadingModels=false;root.failure=msg.message}
                 } catch(e) { root.failure=String(e) }
             }
         }
@@ -1030,24 +1077,86 @@ ShellRoot {
                 }
                 Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;wrapMode:Text.Wrap;color:"#f4a99a";font.pixelSize:10}
             }
-            ColumnLayout {
+            ScrollView {
+                id:settingsScroll
                 visible:root.settingsOpen
-                anchors.fill:parent;anchors.margins:16;spacing:8
-                RowLayout {
-                    Label {text:"Model connection";color:root.ink;font.pixelSize:14;Layout.fillWidth:true}
-                    ToolButton {text:"×";palette.buttonText:root.muted;onClicked:root.settingsOpen=false}
+                anchors.fill:parent;anchors.margins:12
+                contentWidth:availableWidth;clip:true
+                ColumnLayout {
+                    width:settingsScroll.availableWidth;spacing:7
+                    RowLayout {
+                        Layout.fillWidth:true
+                        Label {text:"Model connection";color:root.ink;font.pixelSize:14;Layout.fillWidth:true}
+                        ToolButton {text:"×";palette.buttonText:root.muted;onClicked:root.settingsOpen=false}
+                    }
+                    Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;color:"#f4a99a";font.pixelSize:10;wrapMode:Text.Wrap}
+                    Label {text:"Connection type";color:root.muted;font.pixelSize:10}
+                    ComboBox {
+                        id:connectionType
+                        Layout.fillWidth:true;Layout.preferredHeight:28;font.pixelSize:11
+                        model:["Custom endpoint","Opencode Go"]
+                        currentIndex:root.connectionMode==="opencode_go" ? 1 : 0
+                        onActivated:index=>root.selectConnectionMode(index)
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth:true;spacing:6
+                        visible:root.connectionMode==="custom"
+                        Label {text:"Endpoint URL";color:root.muted;font.pixelSize:11}
+                        TextField {id:endpoint;Layout.fillWidth:true;placeholderText:"http://localhost:11434/v1";font.pixelSize:11;selectByMouse:true}
+                        Label {text:"Model name";color:root.muted;font.pixelSize:11}
+                        TextField {id:modelName;Layout.fillWidth:true;placeholderText:"Model served by your endpoint";font.pixelSize:11;selectByMouse:true}
+                        Label {text:"API-key environment variable (optional)";color:root.muted;font.pixelSize:10}
+                        TextField {id:keyEnv;Layout.fillWidth:true;placeholderText:"e.g. DROPS_API_KEY";font.pixelSize:11;selectByMouse:true}
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth:true;spacing:6
+                        visible:root.connectionMode==="opencode_go"
+                        Label {text:"API key";color:root.muted;font.pixelSize:11}
+                        TextField {
+                            id:opencodeKey
+                            Layout.fillWidth:true;font.pixelSize:11;selectByMouse:true
+                            echoMode:TextInput.Password;placeholderText:"Paste your Opencode Go API key"
+                        }
+                        Label {
+                            Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9
+                            text:"The key is stored only in Drops' config file (mode 0600). Set OPENCODE_API_KEY instead if you prefer the environment."
+                        }
+                        RowLayout {
+                            Layout.fillWidth:true;spacing:6
+                            Label {text:"Model";color:root.muted;font.pixelSize:11;Layout.fillWidth:true}
+                            Button {
+                                id:loadModelsButton
+                                text:root.loadingModels ? "Loading…" : "Load models"
+                                font.pixelSize:10;Layout.preferredHeight:26
+                                enabled:root.connected && !root.loadingModels && root.opencodeHasKey()
+                                onClicked:root.loadModels()
+                            }
+                        }
+                        ComboBox {
+                            id:opencodeModel
+                            Layout.fillWidth:true;Layout.preferredHeight:28;font.pixelSize:11
+                            model:root.opencodeModels
+                            editable:true
+                            enabled:!root.loadingModels
+                            currentIndex:root.opencodeModels.indexOf(root.opencodeSelected)
+                            onActivated:index=>{root.opencodeSelected=root.opencodeModels[index]}
+                            onEditTextChanged:{
+                                const value=String(editText).trim()
+                                if(value!==root.opencodeSelected)root.opencodeSelected=value
+                            }
+                        }
+                    }
+                    CheckBox {id:contentCapture;text:"Read attached window content";palette.windowText:root.ink;font.pixelSize:11}
+                    CheckBox {id:screenCapture;text:"Use screenshots / OCR fallback";palette.windowText:root.ink;font.pixelSize:11;enabled:contentCapture.checked}
+                    CheckBox {id:visionMode;text:"Model supports images";palette.windowText:root.ink;font.pixelSize:11}
+                    Button {
+                        id:saveConnectionButton
+                        text:"Save connection"
+                        Layout.fillWidth:true
+                        enabled:root.connectionMode==="opencode_go" ? (root.opencodeSelected.length>0 && root.opencodeHasKey()) : (endpoint.text.trim().length>0 && modelName.text.trim().length>0)
+                        onClicked:root.saveConnection()
+                    }
                 }
-                Label {text:"Endpoint URL";color:root.muted;font.pixelSize:11}
-                TextField {id:endpoint;Layout.fillWidth:true;placeholderText:"http://localhost:11434/v1";font.pixelSize:11;selectByMouse:true}
-                Label {text:"Model name";color:root.muted;font.pixelSize:11}
-                TextField {id:modelName;Layout.fillWidth:true;placeholderText:"Model served by your endpoint";font.pixelSize:11;selectByMouse:true}
-                Label {text:"API-key environment variable (optional)";color:root.muted;font.pixelSize:10}
-                TextField {id:keyEnv;Layout.fillWidth:true;placeholderText:"e.g. DROPS_API_KEY";font.pixelSize:11;selectByMouse:true}
-                CheckBox {id:contentCapture;text:"Read attached window content";palette.windowText:root.ink;font.pixelSize:11}
-                CheckBox {id:screenCapture;text:"Use screenshots / OCR fallback";palette.windowText:root.ink;font.pixelSize:11;enabled:contentCapture.checked}
-                CheckBox {id:visionMode;text:"Model supports images";palette.windowText:root.ink;font.pixelSize:11}
-                Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;color:"#f4a99a";font.pixelSize:10;wrapMode:Text.Wrap}
-                Button {id:saveConnectionButton;text:"Save connection";Layout.fillWidth:true;enabled:endpoint.text.trim().length>0 && modelName.text.trim().length>0;onClicked:root.send({type:"configure",base_url:endpoint.text,model:modelName.text,api_key_env:keyEnv.text,vision:visionMode.checked,capture_content:contentCapture.checked,screenshots:screenCapture.checked})}
             }
             Popup {
                 id:contextView;x:8;y:8;width:parent.width-16;height:parent.height-16;modal:true;padding:10

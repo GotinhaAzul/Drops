@@ -12,6 +12,18 @@ vision = false
 tools = true
 max_tokens_param = "max_tokens"
 
+# Opencode Go alternative. Set active_provider = "opencode-go" above, pick the
+# model from the settings list, and enter the key there (stored in this file
+# with mode 0600) or export OPENCODE_API_KEY instead.
+# [provider.opencode-go]
+# kind = "opencode_go"
+# base_url = "https://opencode.ai/zen/go/v1"
+# model = "kimi-k3"
+# api_key_env = "OPENCODE_API_KEY"
+# vision = false
+# tools = true
+# max_tokens_param = "max_tokens"
+
 # Every supplied selector must match. Rules can add instructions and explicitly
 # grant shell capability; shell invocations still require approval.
 # [[anchor_rules]]

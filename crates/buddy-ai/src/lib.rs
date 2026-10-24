@@ -21,13 +21,16 @@ mod request;
 mod sse;
 mod stream;
 
-pub use config::ProviderConfig;
+pub use config::{
+    ProviderConfig, ProviderKind, OPENCODE_GO_API_KEY_ENV, OPENCODE_GO_BASE_URL,
+    OPENCODE_GO_SESSION_HEADER,
+};
 pub use error::{
     is_cancelled, snippet, truncate, upstream_message, ProviderError, MAX_ERROR_BODY_BYTES,
     MAX_ERROR_CHARS,
 };
-pub use http::complete;
-pub use request::{apply_max_tokens, build_request_body, endpoint};
+pub use http::{complete, list_models, parse_models, MAX_MODELS_BYTES};
+pub use request::{apply_max_tokens, build_request_body, endpoint, models_endpoint};
 pub use sse::{SseError, SseEvent, SseParser, MAX_SSE_EVENT_BYTES, MAX_SSE_LINE_BYTES};
 pub use stream::{
     StreamAccumulator, MAX_CONTENT_BYTES, MAX_REASONING_BYTES, MAX_TOOL_ARGUMENT_BYTES,

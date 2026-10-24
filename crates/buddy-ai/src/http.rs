@@ -5,19 +5,24 @@
 
 use std::time::Duration;
 
+use anyhow::Context;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{truncate, ProviderError, MAX_ERROR_BODY_BYTES, MAX_ERROR_CHARS};
-use crate::request::{build_request_body, endpoint};
+use crate::request::{build_request_body, endpoint, models_endpoint};
 use crate::sse::{SseEvent, SseParser};
 use crate::stream::StreamAccumulator;
 use crate::{ProviderConfig, ProviderEvent};
 
 /// Maximum bytes accepted for a non-streaming JSON response.
 pub const MAX_JSON_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum bytes accepted for a model-list response.
+pub const MAX_MODELS_BYTES: usize = 1024 * 1024;
+/// Bound a model-list request so a slow gateway cannot block the UI forever.
+const MODELS_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
@@ -26,6 +31,9 @@ fn client() -> &'static reqwest::Client {
             // Streaming responses can legitimately run for minutes, so there is
             // no whole-request timeout; only connection establishment is bounded.
             .connect_timeout(Duration::from_secs(30))
+            // Opencode Go asks clients to identify themselves instead of using
+            // a generic HTTP-library user agent.
+            .user_agent(concat!("drops/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
@@ -33,6 +41,124 @@ fn client() -> &'static reqwest::Client {
 
 fn cancelled() -> anyhow::Error {
     ProviderError::Cancelled.into()
+}
+
+/// Resolve the bearer key for a request.
+///
+/// A key stored by the daemon takes precedence over the environment variable so
+/// the Opencode Go setup keeps working when the variable is not exported.
+fn auth_key(config: &ProviderConfig) -> anyhow::Result<Option<String>> {
+    if let Some(key) = config
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        return Ok(Some(key.to_string()));
+    }
+    let env_name = config.api_key_env.trim();
+    if env_name.is_empty() {
+        return Ok(None);
+    }
+    match std::env::var(env_name) {
+        Ok(key) if !key.trim().is_empty() => Ok(Some(key)),
+        Ok(_) => Ok(None),
+        Err(std::env::VarError::NotPresent) => {
+            Err(ProviderError::config(format!("environment variable {env_name} is not set")).into())
+        }
+        Err(std::env::VarError::NotUnicode(_)) => Err(ProviderError::config(format!(
+            "environment variable {env_name} is not valid UTF-8"
+        ))
+        .into()),
+    }
+}
+
+/// Remove a credential from an upstream error body before it reaches a log,
+/// the UI, or persisted session history.
+fn redact_key(text: &str, key: Option<&str>) -> String {
+    match key.map(str::trim).filter(|key| !key.is_empty()) {
+        Some(key) => text.replace(key, "<redacted>"),
+        None => text.to_string(),
+    }
+}
+
+/// Parse an OpenAI-compatible model list.
+///
+/// Accepts the standard `{"data":[{"id":...}]}` shape, a bare array, and bare
+/// string entries. Ids are trimmed, de-duplicated, and sorted for a stable
+/// picker.
+pub fn parse_models(value: &Value) -> Vec<String> {
+    let entries = value
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| value.get("models").and_then(Value::as_array))
+        .or_else(|| value.as_array());
+    let mut models: Vec<String> = entries
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = match entry {
+                Value::String(id) => Some(id.as_str()),
+                Value::Object(object) => object.get("id").and_then(Value::as_str),
+                _ => None,
+            }?;
+            let id = id.trim();
+            (!id.is_empty()).then(|| id.to_string())
+        })
+        .collect();
+    models.sort();
+    models.dedup();
+    models
+}
+
+/// Fetch the model ids advertised by an OpenAI-compatible endpoint.
+///
+/// The same authentication rules as [`complete`] apply. The request is bounded
+/// in size and time so a bad gateway returns an error instead of hanging.
+pub async fn list_models(config: &ProviderConfig) -> anyhow::Result<Vec<String>> {
+    if config.base_url.trim().is_empty() {
+        return Err(ProviderError::config("base_url is empty").into());
+    }
+    let key = auth_key(config)?;
+    let url = models_endpoint(&config.base_url);
+    let fetch = async {
+        let mut request = client()
+            .get(&url)
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(key) = &key {
+            request = request.bearer_auth(key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ProviderError::Http(truncate(&error.to_string(), MAX_ERROR_CHARS)))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body =
+                read_bounded_bytes(response, MAX_ERROR_BODY_BYTES, &CancellationToken::new())
+                    .await?;
+            let body = redact_key(&String::from_utf8_lossy(&body), key.as_deref());
+            let body = truncate(body.trim(), MAX_ERROR_CHARS);
+            return Err(ProviderError::Status {
+                status: status.as_u16(),
+                body,
+            }
+            .into());
+        }
+        let bytes =
+            read_bounded_bytes(response, MAX_MODELS_BYTES, &CancellationToken::new()).await?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+            ProviderError::protocol(format!(
+                "invalid model list response: {error}; body: {}",
+                truncate(&String::from_utf8_lossy(&bytes), 300)
+            ))
+        })?;
+        Ok(parse_models(&value))
+    };
+    match tokio::time::timeout(MODELS_TIMEOUT, fetch).await {
+        Ok(result) => result,
+        Err(_) => Err(ProviderError::Http("model list request timed out".to_string()).into()),
+    }
 }
 
 /// Perform one chat completion, streaming events and returning the finished
@@ -43,8 +169,9 @@ fn cancelled() -> anyhow::Error {
 /// cancelled call returns a [`ProviderError::Cancelled`] error; use
 /// [`crate::is_cancelled`] to distinguish it.
 ///
-/// The API key, when configured, is read from the named environment variable at
-/// call time and only sent in the `Authorization` header.
+/// The API key, when configured, is taken from the stored key or the named
+/// environment variable at call time and only sent in the `Authorization`
+/// header. Opencode Go also sends its per-conversation session header.
 pub async fn complete(
     config: &ProviderConfig,
     messages: &[Value],
@@ -70,24 +197,18 @@ pub async fn complete(
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&body);
 
-    if !config.api_key_env.trim().is_empty() {
-        let env_name = config.api_key_env.trim();
-        match std::env::var(env_name) {
-            Ok(key) if !key.trim().is_empty() => request = request.bearer_auth(key),
-            Ok(_) => {}
-            Err(std::env::VarError::NotPresent) => {
-                return Err(ProviderError::config(format!(
-                    "environment variable {env_name} is not set"
-                ))
-                .into());
-            }
-            Err(std::env::VarError::NotUnicode(_)) => {
-                return Err(ProviderError::config(format!(
-                    "environment variable {env_name} is not valid UTF-8"
-                ))
-                .into());
-            }
-        }
+    let key = auth_key(config)?;
+    if let Some(key) = &key {
+        request = request.bearer_auth(key);
+    }
+    if config.kind == crate::ProviderKind::OpencodeGo {
+        let session = config
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|session| !session.is_empty())
+            .context("Opencode Go requests need a conversation session id")?;
+        request = request.header(crate::OPENCODE_GO_SESSION_HEADER, session);
     }
 
     let response = tokio::select! {
@@ -100,7 +221,8 @@ pub async fn complete(
     let status = response.status();
     if !status.is_success() {
         let body = read_bounded_bytes(response, MAX_ERROR_BODY_BYTES, &cancel).await?;
-        let body = truncate(String::from_utf8_lossy(&body).trim(), MAX_ERROR_CHARS);
+        let body = redact_key(&String::from_utf8_lossy(&body), key.as_deref());
+        let body = truncate(body.trim(), MAX_ERROR_CHARS);
         return Err(ProviderError::Status {
             status: status.as_u16(),
             body,
