@@ -10,6 +10,10 @@ pub enum Command {
     Watch,
     Pointer,
     Toggle,
+    /// Run tools that normally need approval without asking first.
+    Sudo {
+        enabled: bool,
+    },
     Configure {
         base_url: String,
         model: String,
@@ -101,6 +105,10 @@ pub struct Blob {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Explicit opt-in "sudo" mode: mutating and dangerous tools run without a
+    /// per-call approval prompt. Defaults off, including for old state files.
+    #[serde(default)]
+    pub sudo: bool,
     #[serde(default)]
     pub connection: Value,
     #[serde(default)]

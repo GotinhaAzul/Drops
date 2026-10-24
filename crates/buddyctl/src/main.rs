@@ -19,6 +19,11 @@ enum Action {
     },
     Watch,
     Toggle,
+    /// Enable or disable running tools without per-call approval.
+    Sudo {
+        #[arg(value_parser = ["on", "off"])]
+        mode: String,
+    },
     Configure {
         base_url: String,
         model: String,
@@ -110,6 +115,9 @@ async fn main() -> Result<()> {
         Action::Status { .. } => Command::Status,
         Action::Watch => Command::Watch,
         Action::Toggle => Command::Toggle,
+        Action::Sudo { mode } => Command::Sudo {
+            enabled: mode == "on",
+        },
         Action::Configure {
             base_url,
             model,

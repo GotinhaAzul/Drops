@@ -17,9 +17,9 @@ pub(super) fn definition(search: bool) -> Value {
     json!({"type":"function", "function": {
         "name":if search {"web_search"} else {"web_fetch"},
         "description":if search {
-            "Search DuckDuckGo for public information, returning titles, URLs and snippets. No API key needed. Sends the query to DuckDuckGo and requires user approval. Never include private file contents or secrets. Challenge/rate-limit responses are errors."
+            "Search DuckDuckGo for public information, returning titles, URLs and snippets. No API key needed. Sends the query to DuckDuckGo and requires user approval unless sudo mode is enabled. Never include private file contents or secrets. Challenge/rate-limit responses are errors."
         } else {
-            "Read a public HTTP(S) page as bounded text, without JavaScript, browser logins or cookies. Returns source URL, title and text. Requires approval before sending the URL. Private/local network addresses and nonstandard ports are blocked."
+            "Read a public HTTP(S) page as bounded text, without JavaScript, browser logins or cookies. Returns source URL, title and text. Requires approval before sending the URL unless sudo mode is enabled. Private/local network addresses and nonstandard ports are blocked."
         },
         "parameters":if search {json!({"type":"object", "properties": {
             "query":{"type":"string","minLength":1,"maxLength":500},

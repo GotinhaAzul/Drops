@@ -211,7 +211,7 @@ impl Tool {
             Self::Append => json!({
                 "type": "function", "function": {
                     "name": "append",
-                    "description": "Append exact text to a workspace text file, creating it and parent directories if missing. Does not add a newline automatically. Existing content is backed up under .drops/backups and the replacement is atomic. Requires user approval with a diff preview.",
+                    "description": "Append exact text to a workspace text file, creating it and parent directories if missing. Does not add a newline automatically. Existing content is backed up under .drops/backups and the replacement is atomic. Requires user approval with a diff preview unless sudo mode is enabled.",
                     "parameters": {"type":"object", "properties": {
                         "path":{"type":"string"}, "content":{"type":"string"},
                         "expected_content":{"type":"string", "description":"Optional full previously read content. Refuse the append if the current file differs."}
@@ -242,7 +242,7 @@ impl Tool {
                 "type": "function",
                 "function": {
                     "name": "write",
-                    "description": "Create or overwrite a regular UTF-8 text file inside the project directory. Parent directories are created automatically. An overwrite keeps a recoverable backup under .drops/backups and is applied atomically. Requires user approval with a diff preview.",
+                    "description": "Create or overwrite a regular UTF-8 text file inside the project directory. Parent directories are created automatically. An overwrite keeps a recoverable backup under .drops/backups and is applied atomically. Requires user approval with a diff preview unless sudo mode is enabled.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -258,7 +258,7 @@ impl Tool {
                 "type": "function",
                 "function": {
                     "name": "edit",
-                    "description": "Edit a workspace text file using a single exact replacement or a batch of non-overlapping edits against the original text. Batch edits are all validated before writing; a failed match leaves the file unchanged. Requires user approval.",
+                    "description": "Edit a workspace text file using a single exact replacement or a batch of non-overlapping edits against the original text. Batch edits are all validated before writing; a failed match leaves the file unchanged. Requires user approval unless sudo mode is enabled.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -280,7 +280,7 @@ impl Tool {
                 "type": "function",
                 "function": {
                     "name": "bash",
-                    "description": "Run a bash command in the project directory. The user must approve every invocation. Returns combined output and the exit code.",
+                    "description": "Run a bash command in the project directory. The user must approve every invocation unless sudo mode is enabled. Returns combined output and the exit code.",
                     "parameters": {
                         "type": "object",
                         "properties": {

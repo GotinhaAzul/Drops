@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
         serde_json::from_slice(&std::fs::read(data.join("blobs.json"))?)?
     } else {
         Snapshot {
+            sudo: false,
             connection: Value::Null,
             appearance: config.appearance.clone(),
             panel_open: false,
@@ -534,6 +535,7 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
     match cmd {
         Command::Status => return Ok(json!({"type":"state","state":public_snapshot(&a.snapshot)})),
         Command::Toggle => a.snapshot.panel_open = !a.snapshot.panel_open,
+        Command::Sudo { enabled } => a.snapshot.sudo = enabled,
         Command::Create { appearance } => {
             if a.snapshot.blobs.len() >= MAX_BLOBS {
                 bail!("maximum of three drops");
@@ -863,6 +865,7 @@ async fn send(app: &Shared, id: String, text: String) -> Result<Value> {
     }
     let headless = a.headless;
     let configuration = a.config.clone();
+    let sudo = a.snapshot.sudo;
     let session_dir = a.data.join("sessions");
     let project_dir = configuration
         .project_dir
@@ -983,12 +986,16 @@ async fn send(app: &Shared, id: String, text: String) -> Result<Value> {
                 instructions.push_str(&rule.instructions);
                 allow_shell |= !headless && rule.allow_shell;
             }
+            if sudo {
+                instructions.push_str("\nSudo mode is enabled by the user: tools that normally require approval (file writes, edits, document edits, web requests and shell commands) run immediately without a prompt. Prepare the same careful previews, stay inside the tool workspace, and only perform actions the user asked for. Sudo mode removes prompts; it does not grant shell capability where it is unavailable. Never claim an approval prompt was shown.");
+            }
             let config = buddy_agent::AgentConfig {
                 provider: active_provider,
                 session_dir,
                 project_dir,
                 instructions,
                 max_turns: 16,
+                sudo,
                 external_tools: configuration.external_tools,
                 context_tools,
             };

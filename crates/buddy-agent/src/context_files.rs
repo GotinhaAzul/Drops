@@ -125,7 +125,7 @@ fn compose_system_with(
         );
         preamble.push_str(
             "\nUse `web_search` for current public information and `web_fetch` to read promising sources. \
-             Both send data outside this machine and require user approval. Never put secrets or private \
+             Both send data outside this machine and require user approval unless sudo mode is enabled. Never put secrets or private \
              file/window contents in queries or URLs. DuckDuckGo search needs no API key. Cite source \
              URLs in answers and distinguish search snippets from pages actually fetched. If search is \
              blocked or a page cannot be read, say so; do not invent sources or treat it as no results. \

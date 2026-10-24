@@ -41,6 +41,7 @@ ShellRoot {
         screenCapture.checked=c.screenshots!==false
     }
     property bool chatOpen: false
+    readonly property bool sudo: state.sudo === true
     property bool capturing: state.blobs.some(b=>b.state==="capturing")
     property var inspectedContext: null
     function inspectContext() {
@@ -875,7 +876,7 @@ ShellRoot {
         anchors {top:true;right:true}
         margins {top:40;right:20}
         implicitWidth:260
-        implicitHeight:root.settingsOpen ? 444 : 276+(root.selected && root.selected.context && root.selected.context.content ? 18 : 0)+(root.failure ? 26 : 0)
+        implicitHeight:root.settingsOpen ? 444 : 314+(root.selected && root.selected.context && root.selected.context.content ? 18 : 0)+(root.failure ? 26 : 0)
         color:"transparent";exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-panel"
         WlrLayershell.keyboardFocus:WlrKeyboardFocus.OnDemand
@@ -954,6 +955,17 @@ ShellRoot {
                     Button {id:newDropButton;Accessible.name:"New drop";text:"+";ToolTip.visible:hovered;ToolTip.text:"New drop";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:root.blobIds.length<3;onClicked:{root.chatOpen=false;root.send({type:"create",appearance:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook})}}
                     Button {id:deleteDropButton;Accessible.name:"Delete drop";text:"−";ToolTip.visible:hovered;ToolTip.text:"Delete selected drop and conversation";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:!!root.currentDrop;onClicked:root.send({type:"remove",id:root.currentDrop.id})}
                     ToolButton {text:"⚙";ToolTip.visible:hovered;ToolTip.text:"Model connection";Layout.preferredWidth:28;Layout.preferredHeight:28;onClicked:root.openSettings()}
+                }
+                Switch {
+                    id:sudoToggle
+                    Accessible.name:"Sudo mode"
+                    text:"Sudo mode · no prompts";font.pixelSize:11
+                    palette.windowText:root.sudo ? "#e5b96f" : root.ink
+                    Layout.fillWidth:true;Layout.preferredHeight:30
+                    checked:root.sudo;enabled:root.connected
+                    onToggled:root.send({type:"sudo",enabled:checked})
+                    ToolTip.visible:hovered
+                    ToolTip.text:"File edits, shell commands and web requests run without an approval prompt. Validation, workspace limits and backups still apply. Only enable this while you trust what this drop may do."
                 }
                 Label {
                     Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9;horizontalAlignment:Text.AlignHCenter

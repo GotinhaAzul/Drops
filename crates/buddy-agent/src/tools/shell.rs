@@ -1,5 +1,6 @@
 //! Bash tool: a dangerous tool that is present only when `allow_shell` is true
-//! and always needs one approval per invocation before it gets here.
+//! and normally needs one approval per invocation before it gets here. Sudo
+//! mode is the only path that skips that prompt; `allow_shell` still gates it.
 
 use std::process::Stdio;
 use std::time::Duration;

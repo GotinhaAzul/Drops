@@ -26,6 +26,7 @@ for line in sys.stdin:
  if kind=="create":
   state["blobs"].append({{"id":"test","appearance":cmd["appearance"],"state":"idle","placement":{{"anchor":{{"kind":"panel"}},"x":10,"y":10,"visible":False,"label":"Ready to place"}},"history":[],"context":None,"approval":None}});publish();emit({{"type":"ok","id":"test"}})
  elif kind=="style":state["blobs"][0]["appearance"]=cmd["appearance"];publish()
+ elif kind=="sudo":state["sudo"]=cmd["enabled"];publish()
  elif kind=="pointer":emit({{"type":"pointer","cursor":None}})
  elif kind=="preview":emit({{"type":"preview","geometry":None}})
  elif kind=="drop":state["panel_open"]=False;state["blobs"][0]["placement"]["anchor"]={{"kind":"workspace","id":1}};publish();emit({{"type":"ok","id":"test"}})
@@ -61,8 +62,10 @@ for line in sys.stdin:
                 root.drop(root.currentDrop.id);root.testPhase++;break
             case 5:if(root.state.panel_open)return;
                 root.loadSettings();root.settingsOpen=true;endpoint.text="http://127.0.0.1:1234/v1";modelName.text="demo";keyEnv.text="";saveConnectionButton.clicked();root.testPhase++;break
-            case 6:if(root.settingsOpen)return;deleteDropButton.clicked();root.testPhase++;break
-            case 7:if(root.blobIds.length)return;console.log("TEST_INTERACTIONS_DONE");Qt.quit();break
+            case 6:if(root.settingsOpen)return;sudoToggle.checked=true;sudoToggle.toggled();root.testPhase++;break
+            case 7:if(!root.sudo)return;sudoToggle.checked=false;sudoToggle.toggled();root.testPhase++;break
+            case 8:if(root.sudo)return;deleteDropButton.clicked();root.testPhase++;break
+            case 9:if(root.blobIds.length)return;console.log("TEST_INTERACTIONS_DONE");Qt.quit();break
             }
         }
     }
@@ -78,4 +81,5 @@ for line in sys.stdin:
     assert any(c["type"]=="drop" and c["use_cursor"] for c in commands)
     assert any(c["type"]=="configure" and c["base_url"]=="http://127.0.0.1:1234/v1" and c["model"]=="demo" for c in commands)
     assert any(c["type"]=="remove" for c in commands)
-    print("PASS: real QML create/style/delete controls, endpoint form, panel close on drop, interpolated pointer-following animation")
+    assert [c["enabled"] for c in commands if c["type"]=="sudo"]==[True,False]
+    print("PASS: real QML create/style/delete controls, endpoint form, sudo toggle, panel close on drop, interpolated pointer-following animation")
