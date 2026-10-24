@@ -101,6 +101,7 @@ uv run --with python-docx --with openpyxl python tests/office-compat.py
 python3 tests/widget-smoke.py
 python3 tests/qml-interactions.py
 python3 tests/qml-bubble.py
+python3 tests/qml-bubble-position.py
 python3 tests/failure-smoke.py
 python3 tests/window-content-smoke.py
 python3 tests/shutdown-smoke.py

@@ -63,6 +63,8 @@ ShellRoot {
     property color ink: appearance.foreground || "#ecebe4"
     property color muted: appearance.muted || "#92968a"
     property real blobSize: Math.max(20,Math.min(52,appearance.blob_size || 44))
+    readonly property int dropSurfaceSize: 72
+    readonly property int dropSurfaceInset: 8
     property string failure: ""
     property bool connected: false
     property bool dragging: false
@@ -452,13 +454,30 @@ ShellRoot {
         property int dotPhase: 0
         property real previousLogHeight: 0
         property real edgePad: 8
-        property real spaceAbove: Math.max(0, place.y - monitor.y - edgePad - 14)
-        property real spaceBelow: Math.max(0, monitor.y + monitor.height - (place.y+root.blobSize+14) - edgePad)
+        property real avatarGap: 10
+        property real avatarCenterX: Math.max(monitor.x,place.x-root.dropSurfaceInset)+root.dropSurfaceSize/2
+        property real avatarTop: Math.max(monitor.y,place.y-root.dropSurfaceInset)+(root.dropSurfaceSize-(root.blobSize-2))/2
+        property real avatarBottom: avatarTop+root.blobSize-2
+        property real spaceAbove: Math.max(0, avatarTop-monitor.y-edgePad-avatarGap)
+        property real spaceBelow: Math.max(0, monitor.y+monitor.height-edgePad-avatarBottom-avatarGap)
         property bool above: spaceAbove > spaceBelow
+        property real bodySpace: Math.max(0,(above ? spaceAbove : spaceBelow)-tailSize)
+        // Reserve the header, approvals, composer and their spacing before
+        // sizing history. Clamping an oversized bubble to the screen edge
+        // would otherwise push its tail back over the avatar.
+        property real bodyChromeHeight: {
+            let height=24, count=0
+            for (const item of body.children) {
+                if (!item.visible) continue
+                count++
+                if (item!==chatLog) height+=item.height
+            }
+            return height+Math.max(0,count-1)*body.spacing
+        }
         property real tailSize: 9
-        property real left: Math.max(monitor.x+edgePad, Math.min(place.x+28-bubble.implicitWidth/2, monitor.x+monitor.width-bubble.implicitWidth-edgePad))
-        property real top: above ? Math.max(monitor.y+edgePad, place.y-(bubble.implicitHeight-bubble.tailSize)-14) : Math.min(monitor.y+monitor.height-bubble.implicitHeight-edgePad, place.y+root.blobSize+14-bubble.tailSize)
-        property real tailX: Math.max(20, Math.min(bubble.implicitWidth-20, place.x+28-left))
+        property real left: Math.max(monitor.x+edgePad, Math.min(avatarCenterX-bubble.implicitWidth/2, monitor.x+monitor.width-bubble.implicitWidth-edgePad))
+        property real top: above ? Math.max(monitor.y+edgePad, avatarTop-avatarGap-bubble.implicitHeight) : Math.min(monitor.y+monitor.height-bubble.implicitHeight-edgePad, avatarBottom+avatarGap)
+        property real tailX: Math.max(20, Math.min(bubble.implicitWidth-20, avatarCenterX-left))
         function submit() {
             if(bubble.busy)return
             const value=chatInput.text
@@ -641,7 +660,7 @@ ShellRoot {
                     objectName:bubble.blob ? "chat-log-"+bubble.blob.id : "chat-log"
                     visible:bubble.hasHistory
                     width:parent.width
-                    height:Math.min(chatColumn.implicitHeight,180)
+                    height:Math.min(chatColumn.implicitHeight,180,Math.max(0,bubble.bodySpace-bubble.bodyChromeHeight))
                     clip:true;contentWidth:availableWidth
                     ScrollBar.vertical.policy:ScrollBar.AsNeeded
                     Column {
@@ -1032,8 +1051,8 @@ ShellRoot {
                     // screenshot does not contain an open conversation.
                     visible:placed.onMonitor
                     anchors {top:true;left:true}
-                    margins {top:Math.max(0,pos.y-monitorScope.monitor.y-8);left:Math.max(0,pos.x-monitorScope.monitor.x-8)}
-                    implicitWidth:72;implicitHeight:72;color:"transparent";exclusionMode:ExclusionMode.Ignore
+                    margins {top:Math.max(0,pos.y-monitorScope.monitor.y-root.dropSurfaceInset);left:Math.max(0,pos.x-monitorScope.monitor.x-root.dropSurfaceInset)}
+                    implicitWidth:root.dropSurfaceSize;implicitHeight:root.dropSurfaceSize;color:"transparent";exclusionMode:ExclusionMode.Ignore
                     WlrLayershell.namespace:"drops-blob";WlrLayershell.keyboardFocus:WlrKeyboardFocus.None
                     Rectangle {
                         id:ripple
