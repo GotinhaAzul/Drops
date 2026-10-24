@@ -1,9 +1,12 @@
 //! Tool registry and built-in tool definitions.
 
+mod discovery;
 mod external;
 mod files;
+mod office;
 mod process;
 mod shell;
+mod web;
 
 use std::path::PathBuf;
 
@@ -76,6 +79,13 @@ pub(crate) struct ToolContext {
 #[derive(Clone)]
 pub(crate) enum Tool {
     Read,
+    ListFiles,
+    SearchFiles,
+    Append,
+    WebSearch,
+    WebFetch,
+    DocumentRead,
+    DocumentEdit,
     Write,
     Edit,
     Bash,
@@ -88,6 +98,13 @@ impl Tool {
     pub(crate) fn name(&self) -> &str {
         match self {
             Self::Read => "read",
+            Self::ListFiles => "list_files",
+            Self::SearchFiles => "search_files",
+            Self::Append => "append",
+            Self::WebSearch => "web_search",
+            Self::WebFetch => "web_fetch",
+            Self::DocumentRead => "document_read",
+            Self::DocumentEdit => "document_edit",
             Self::Write => "write",
             Self::Edit => "edit",
             Self::Bash => "bash",
@@ -99,9 +116,11 @@ impl Tool {
 
     pub(crate) fn risk(&self) -> Risk {
         match self {
-            Self::Read | Self::Skill => Risk::ReadOnly,
-            Self::Write | Self::Edit => Risk::Mutating,
-            Self::Bash => Risk::Dangerous,
+            Self::Read | Self::ListFiles | Self::SearchFiles | Self::DocumentRead | Self::Skill => {
+                Risk::ReadOnly
+            }
+            Self::Write | Self::Edit | Self::Append | Self::DocumentEdit => Risk::Mutating,
+            Self::Bash | Self::WebSearch | Self::WebFetch => Risk::Dangerous,
             Self::External(tool) => Risk::parse(&tool.risk),
             Self::Context(tool) => Risk::parse(&tool.risk),
         }
@@ -109,6 +128,22 @@ impl Tool {
 
     pub(crate) fn definition(&self) -> Value {
         match self {
+            Self::ListFiles | Self::SearchFiles => {
+                discovery::definition(matches!(self, Self::SearchFiles))
+            }
+            Self::Append => json!({
+                "type": "function", "function": {
+                    "name": "append",
+                    "description": "Append exact text to a workspace file, creating it and parent directories if missing. Does not add a newline automatically. Requires user approval.",
+                    "parameters": {"type":"object", "properties": {
+                        "path":{"type":"string"}, "content":{"type":"string"}
+                    }, "required":["path","content"]}
+                }
+            }),
+            Self::DocumentRead | Self::DocumentEdit => {
+                office::definition(matches!(self, Self::DocumentEdit))
+            }
+            Self::WebSearch | Self::WebFetch => web::definition(matches!(self, Self::WebSearch)),
             Self::Read => json!({
                 "type": "function",
                 "function": {
@@ -144,16 +179,21 @@ impl Tool {
                 "type": "function",
                 "function": {
                     "name": "edit",
-                    "description": "Replace exact text in a file inside the project directory. The old text must occur exactly once unless replace_all is true. Requires user approval.",
+                    "description": "Edit a workspace text file using a single exact replacement or a batch of non-overlapping edits against the original text. Batch edits are all validated before writing; a failed match leaves the file unchanged. Requires user approval.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "path": { "type": "string", "description": "Path relative to the project root." },
                             "old_string": { "type": "string", "description": "Exact text to replace. Include enough context to be unique." },
                             "new_string": { "type": "string", "description": "Replacement text." },
-                            "replace_all": { "type": "boolean", "description": "Replace every occurrence instead of requiring a unique match." }
+                            "replace_all": { "type": "boolean", "description": "Replace every occurrence for a single replacement; cannot be combined with edits." },
+                            "expected_content": {"type":"string", "description":"Optional full previously read file content. Refuse the edit if the current file differs."},
+                            "edits": {"type":"array", "minItems":1, "maxItems":100, "description":"Batch replacements against the original file; use instead of old_string/new_string.", "items":{
+                                "type":"object", "properties": {"old_string":{"type":"string", "minLength":1}, "new_string":{"type":"string"}}, "required":["old_string","new_string"]
+                            }}
                         },
-                        "required": ["path", "old_string", "new_string"]
+                        "required": ["path"],
+                        "oneOf": [{"required":["old_string","new_string"], "not":{"required":["edits"]}}, {"required":["edits"], "not":{"anyOf":[{"required":["old_string"]},{"required":["new_string"]}]}}]
                     }
                 }
             }),
@@ -233,7 +273,18 @@ impl ToolRegistry {
         external: Vec<ExternalTool>,
         skills: Vec<Skill>,
     ) -> Self {
-        let mut tools = vec![Tool::Read, Tool::Write, Tool::Edit];
+        let mut tools = vec![
+            Tool::Read,
+            Tool::ListFiles,
+            Tool::SearchFiles,
+            Tool::Write,
+            Tool::Edit,
+            Tool::Append,
+            Tool::WebSearch,
+            Tool::WebFetch,
+            Tool::DocumentRead,
+            Tool::DocumentEdit,
+        ];
         if allow_shell {
             tools.push(Tool::Bash);
         }
@@ -293,6 +344,13 @@ impl ToolRegistry {
     ) -> ToolOutcome {
         let outcome = match tool {
             Tool::Read => files::read(&self.ctx, arguments),
+            Tool::ListFiles => discovery::execute(&self.ctx, arguments, false, cancel),
+            Tool::SearchFiles => discovery::execute(&self.ctx, arguments, true, cancel),
+            Tool::Append => files::append(&self.ctx, arguments),
+            Tool::WebSearch => web::execute(arguments, true, cancel).await,
+            Tool::WebFetch => web::execute(arguments, false, cancel).await,
+            Tool::DocumentRead => office::execute(&self.ctx, arguments, false, cancel).await,
+            Tool::DocumentEdit => office::execute(&self.ctx, arguments, true, cancel).await,
             Tool::Write => files::write(&self.ctx, arguments),
             Tool::Edit => files::edit(&self.ctx, arguments),
             Tool::Bash => shell::bash(&self.ctx, arguments, cancel).await,
@@ -533,10 +591,42 @@ mod tests {
             .iter()
             .map(|definition| definition["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["read", "write", "edit", "bash"]);
+        assert_eq!(
+            names,
+            vec![
+                "read",
+                "list_files",
+                "search_files",
+                "write",
+                "edit",
+                "append",
+                "web_search",
+                "web_fetch",
+                "document_read",
+                "document_edit",
+                "bash"
+            ]
+        );
         for definition in definitions {
             assert_eq!(definition["type"], "function");
             assert!(definition["function"]["parameters"].is_object());
+        }
+    }
+
+    #[test]
+    fn coworker_tools_keep_reads_automatic_and_append_approved() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"), false, vec![], vec![], vec![]);
+        for name in ["list_files", "search_files", "document_read"] {
+            assert!(!registry.find(name).unwrap().risk().requires_approval());
+        }
+        assert!(registry.find("append").unwrap().risk().requires_approval());
+        assert!(registry
+            .find("document_edit")
+            .unwrap()
+            .risk()
+            .requires_approval());
+        for name in ["web_search", "web_fetch"] {
+            assert!(registry.find(name).unwrap().risk().requires_approval());
         }
     }
 

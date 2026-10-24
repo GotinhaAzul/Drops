@@ -35,6 +35,7 @@ pub mod hit;
 mod hypr;
 pub mod model;
 pub mod procfs;
+pub mod workspace;
 
 use anyhow::Result;
 use serde_json::Value;
@@ -166,7 +167,8 @@ pub fn refresh_from_snapshot(snapshot: &Snapshot, anchor: &Anchor) -> Result<Pla
 /// Build the context bundle for an anchor.
 ///
 /// Window anchors include the process's working directory and command line,
-/// read from `/proc/<pid>`, only for that window's PID. Workspace anchors
+/// read from `/proc/<pid>`. Terminal workspace detection also inspects the bounded
+/// descendant process tree and a uniquely matched tmux client. Workspace anchors
 /// include a compact list of windows on the workspace.
 pub async fn context(anchor: &Anchor) -> Result<Value> {
     let snapshot = hypr::snapshot().await?;
@@ -175,7 +177,22 @@ pub async fn context(anchor: &Anchor) -> Result<Value> {
             let client = find_client(&snapshot, address)
                 .ok_or_else(|| AnchorError::WindowNotFound(address.clone()))?;
             let process = procfs::process_info(client.pid).await;
-            Ok(bundle::window_context(&snapshot, client, Some(&process)))
+            let shared_pid = snapshot
+                .clients
+                .iter()
+                .filter(|other| other.pid == client.pid && other.mapped && !other.hidden)
+                .count()
+                > 1;
+            let working = if let Some(document) =
+                workspace::detect_document(&client.class, &client.title, &process).await
+            {
+                document
+            } else {
+                workspace::detect(&client.class, &process, shared_pid).await
+            };
+            let mut context = bundle::window_context(&snapshot, client, Some(&process));
+            context["working_context"] = working;
+            Ok(context)
         }
         Anchor::Workspace { id } => {
             let known = snapshot

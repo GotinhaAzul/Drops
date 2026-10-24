@@ -3,7 +3,7 @@
 Drop onto a window, then ask about it. Each message refreshes the attached content:
 
 - Terminals: matching tmux scrollback where available; otherwise visible text through accessibility or screenshot OCR. For example: “What command did I run wrong?”
-- Editors: exposed accessibility text and the visible screenshot. For repository-wide inspection, also configure `project_dir`; a window attachment does not grant access to every project file.
+- Editors: exposed accessibility text and the visible screenshot. Workspace detection can use existing paths from editor launch arguments to identify the repository. When that evidence is unavailable or ambiguous, configure `project_dir` for repository-wide file tools. The current editor tab is not inferred from launch arguments.
 - Browsers: exposed page text, with visible screenshot/OCR as fallback. For example: “Summarize this page.” Apps must expose accessibility text for content beyond the visible crop.
 
 ## Fuller content on demand

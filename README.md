@@ -50,9 +50,33 @@ buddyctl watch
 
 The socket uses newline-delimited JSON and mode 0600. `buddyctl bridge` connects stdin/stdout bidirectionally for the QML shell. `docs/contracts.md` describes crate boundaries. Sessions and blob metadata live under `$XDG_DATA_HOME/drops` (default `~/.local/share/drops`); API keys are read from the environment variable named by `api_key_env` and are never written by Drops.
 
+## Working with the anchored app
+
+Each message refreshes `working_context`: current directory, repository root/name, common project manifest names, detection source and any ambiguity. `tool_workspace` records the actual file-tool boundary. Inspect both through the context inspector or `buddyctl context BLOB_ID`.
+
+- **Terminals:** Drops inspects only the anchored process and its bounded descendant tree, preferring foreground processes with a terminal and falling back to a unique shell directory. A shell `cd` is picked up on the next message. Multiple different tab/pane directories remain ambiguous.
+- **tmux:** when exactly one client belongs to that window, Drops asks the default tmux server for that client's active pane directory. Custom tmux sockets and ambiguous client matches currently fall back without guessing.
+- **Editors:** Zed, VS Code/VSCodium, Cursor, Windsurf and supported JetBrains classes expose a workspace when their process command line contains an existing directory or opened file path. Files inside one Git repository resolve to that repository. The opened file is launch context, not a claim about the selected editor tab. GUI reuse and multiple windows sharing a PID may not expose enough evidence; no repo is inferred from a title.
+
+For local office applications (LibreOffice, OnlyOffice, Word/Excel processes), Drops also checks existing `.docx`/`.xlsx` launch paths and open handles in the anchored process tree. The window title can disambiguate those verified candidates. It does not search your Documents folder, inspect browser profiles, or infer a local path from a browser document title. A file that the app no longer holds open and did not expose in its arguments may need an explicit path.
+
+`document_read` reads saved Word paragraphs or Excel sheets/cells and returns a SHA-256 fingerprint. `document_edit` requires approval and that fingerprint, then creates a **new copy** at a nonexisting output path inside the workspace. It never overwrites the open document. Word editing supports unique text replacements within body paragraphs, including across formatting runs; paragraphs with breaks, fields or tracked changes are refused. Excel editing supports literal values in existing cells in one sheet; formula/error cells are read-only, and formula caches can remain stale until the app recalculates the copy. Styles and other archive parts are retained. These tools require Python 3 with only its standard library; no Office installation or API key is needed. Documents are limited to 32 MiB compressed/64 MiB expanded, with smaller XML-part and output limits. Encrypted, signed, macro-enabled, legacy `.doc`/`.xls`, ODF, and web-hosted documents are unsupported. Unsaved app changes are not included.
+
+The chat header shows the selected workspace or saved document when context is available; click it to inspect the evidence and actual tool boundary. Detection refreshes when a message is sent.
+
+The selected root refreshes per message; the Drop is instructed to check it before reusing paths from an earlier turn. Explicit `project_dir` always wins, including when the detected application workspace differs. Detection grants no extra shell capability and file mutations still need approval. No editor settings or desktop configuration are changed.
+
 ## Safety and scope
 
-File tools are confined to the configured `project_dir`; when omitted, each drop gets an empty private directory under the app data directory. The filesystem root is refused. File changes and mutating/dangerous external tools request approval; shell requires a terminal anchor and explicit approval. Window context and model output are untrusted. A local endpoint keeps model requests local; selecting a hosted endpoint sends the displayed context to it. On each message, window drops read matching accessibility text or terminal tmux scrollback and can capture the visible window for OCR. The request carries a shortened preview; the read-only `window_content` tool lets the agent search or read a larger on-demand capture of the same window (also accessibility/tmux text, never a browser DOM/HTML dump). Enable “Model supports images” in the endpoint settings to attach pixels to a vision model. The context inspector shows the captured text, image, sources and any missing-content warnings. Capture can be disabled in settings; locked, hidden or occluded windows are not screenshotted. See [window capture](docs/capture/README.md).
+The Drop can browse a directory with `list_files`, find literal text with `search_files`, read files with `read`, and create, edit or append text with `write`, `edit` and `append`. For example, ask it to find a note, summarize it, or append an action list. Search skips hidden entries, symlinks, binary files and files over 1 MiB; scans are bounded and report incomplete results. Directory listings include hidden names. Append writes exactly the supplied text, including any newlines.
+
+`edit` supports either a single exact replacement (`old_string`, `new_string`) or an `edits` array of replacements against the original file. Every batch match is checked before writing, so a missing, ambiguous or overlapping match leaves the file unchanged. Optional `expected_content` refuses changes if the file differs from the version the Drop read. This check does not lock out concurrent external writers.
+
+`web_search` uses DuckDuckGo's HTML search with no API key; results include titles, URLs and snippets. `web_fetch` reads public pages into text for follow-up research. Both request approval before sending the query or URL outside the machine. They use no browser cookies, credentials or JavaScript. Private/reserved network destinations, credentialed URLs and nonstandard ports are blocked; redirects are checked again. Requests have a 25-second overall timeout, a 1 MiB response limit and bounded text output. DuckDuckGo may rate-limit requests or show a bot challenge; the Drop reports this as a search failure. Page reading supports UTF-8 HTML, text and JSON, not PDFs or logged-in/JavaScript applications.
+
+Try: “Find the TODOs in my notes and propose an edit,” or “Search the web for the official documentation, read it, then update my project notes.” The Drop continues within the request, pauses for approvals, verifies edits, and cites web sources. It does not run unattended background tasks.
+
+File tools use an explicit configured `project_dir` first. Otherwise they follow a uniquely detected terminal/editor workspace, using its enclosing Git repository root when present, and fall back to a private directory per Drop when detection is unavailable or ambiguous. Automatic selection refuses the filesystem root, your home directory itself and protected system trees; an explicit project setting remains available for other intentional scopes. The filesystem root is refused. File changes and mutating/dangerous external tools request approval; shell requires a terminal anchor and explicit approval. Window context and model output are untrusted. A local endpoint keeps model requests local; selecting a hosted endpoint sends the displayed context to it. On each message, window drops read matching accessibility text or terminal tmux scrollback and can capture the visible window for OCR. The request carries a shortened preview; the read-only `window_content` tool lets the agent search or read a larger on-demand capture of the same window (also accessibility/tmux text, never a browser DOM/HTML dump). Enable “Model supports images” in the endpoint settings to attach pixels to a vision model. The context inspector shows the captured text, image, sources and any missing-content warnings. Capture can be disabled in settings; locked, hidden or occluded windows are not screenshotted. See [window capture](docs/capture/README.md).
 
 The current build is an initial implementation, not a claim that every success criterion is measured. See `docs/STATUS.md` for verified behavior and remaining desktop validation. Provider fixtures and a mock endpoint exercise the engine without a GPU. No live endpoint, model weights, credentials or desktop configuration are provisioned by tests.
 
@@ -62,7 +86,12 @@ The current build is an initial implementation, not a claim that every success c
 mise exec -- cargo test --workspace
 mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 mise exec -- cargo fmt --all -- --check
+# Optional live checks: contact DuckDuckGo and public Rust documentation
+mise exec -- cargo test -p buddy-agent live_ -- --ignored
 python3 tests/smoke.py
+python3 tests/office-tools.py
+# Optional compatibility checks using independently installed Office readers
+uv run --with python-docx --with openpyxl python tests/office-compat.py
 python3 tests/widget-smoke.py
 python3 tests/qml-interactions.py
 python3 tests/qml-bubble.py

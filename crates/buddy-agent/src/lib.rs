@@ -858,6 +858,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn web_tools_require_approval_and_denial_prevents_network_execution() {
+        for name in ["web_search", "web_fetch"] {
+            let (_temp, config) = setup(4);
+            let mut turn = 0;
+            let _mock = test_support::install(move |_messages, tools| {
+                turn += 1;
+                assert!(tools.iter().any(|tool| tool["function"]["name"] == name));
+                if turn == 1 {
+                    // Invalid arguments would fail validation if execution happened.
+                    Ok(call("web1", name, json!({})))
+                } else {
+                    Ok(text("Stopped after denial"))
+                }
+            });
+            let (tx, rx) = mpsc::unbounded_channel();
+            let (_approval_tx, approval_rx) = approvals(vec![false]);
+            run(
+                config,
+                format!("deny-{name}"),
+                "Research something".into(),
+                json!({}),
+                false,
+                tx,
+                approval_rx,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            let events = drain(rx);
+            assert!(events.iter().any(|event| event["type"] == "approval"
+                && event["name"] == name
+                && event["risk"] == "dangerous"));
+            let result = events
+                .iter()
+                .find(|event| event["type"] == "tool_result")
+                .unwrap();
+            assert_eq!(result["is_error"], true);
+            assert!(result["text"].as_str().unwrap().contains("denied"));
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_batch_edit_runs_then_can_be_verified_by_read() {
+        let (_temp, config) = setup(5);
+        std::fs::write(config.project_dir.join("note.txt"), "one two").unwrap();
+        let mut turn = 0;
+        let _mock = test_support::install(move |messages, _tools| {
+            turn += 1;
+            match turn {
+                1 => Ok(call(
+                    "e1",
+                    "edit",
+                    json!({"path":"note.txt", "expected_content":"one two", "edits":[
+                        {"old_string":"one", "new_string":"1"}, {"old_string":"two", "new_string":"2"}
+                    ]}),
+                )),
+                2 => Ok(call("r1", "read", json!({"path":"note.txt"}))),
+                _ => {
+                    assert_eq!(messages.last().unwrap()["content"], "1 2");
+                    Ok(text("Verified note.txt"))
+                }
+            }
+        });
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = approvals(vec![true]);
+        run(
+            config.clone(),
+            "batch-edit".into(),
+            "Update note".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(config.project_dir.join("note.txt")).unwrap(),
+            "1 2"
+        );
+        let events = drain(rx);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "approval")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "tool_result" && event["is_error"] == false)
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn write_requires_exact_approval_and_denial_is_reported() {
         let (_temp, config) = setup(4);
         let mut turn = 0;

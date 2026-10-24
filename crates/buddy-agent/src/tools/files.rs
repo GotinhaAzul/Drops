@@ -101,10 +101,11 @@ pub(crate) fn read(ctx: &ToolContext, arguments: &Value) -> ToolOutcome {
         if out.len() < 64 && line.len() > MAX_READ_OUTPUT_BYTES {
             // A single enormous line: show a bounded prefix.
             let mut prefix = line.to_string();
-            prefix.truncate(MAX_READ_OUTPUT_BYTES);
-            while !prefix.is_char_boundary(prefix.len()) {
-                prefix.pop();
+            let mut boundary = MAX_READ_OUTPUT_BYTES;
+            while !prefix.is_char_boundary(boundary) {
+                boundary -= 1;
             }
+            prefix.truncate(boundary);
             out.push_str(&prefix);
             out.push_str("...[line truncated]");
             end += 1;
@@ -174,6 +175,39 @@ pub(crate) fn write(ctx: &ToolContext, arguments: &Value) -> ToolOutcome {
     }
 }
 
+pub(crate) fn append(ctx: &ToolContext, arguments: &Value) -> ToolOutcome {
+    use std::io::Write;
+    let result = (|| -> anyhow::Result<String> {
+        let requested = arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing string argument `path`"))?;
+        let content = arguments
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing string argument `content`"))?;
+        let path = paths::confine(&ctx.root, requested)?;
+        if path.exists() && !path.is_file() {
+            anyhow::bail!("target must be a regular file");
+        }
+        let path = ensure_parent(&ctx.root, &path).map_err(anyhow::Error::msg)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        file.write_all(content.as_bytes())?;
+        Ok(format!(
+            "Appended {} bytes to `{}`.",
+            content.len(),
+            paths::display_path(&ctx.root, &path)
+        ))
+    })();
+    match result {
+        Ok(message) => ToolOutcome::ok(message),
+        Err(err) => ToolOutcome::error(format!("append: {err:#}")),
+    }
+}
+
 /// Create parents, then re-verify the canonical parent is still inside root.
 fn ensure_parent(root: &Path, path: &Path) -> Result<std::path::PathBuf, String> {
     let parent = path
@@ -220,10 +254,22 @@ pub(crate) fn edit(ctx: &ToolContext, arguments: &Value) -> ToolOutcome {
         return ToolOutcome::error(format!("edit: `{display}` is a directory."));
     }
 
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(err) => return ToolOutcome::error(format!("edit: cannot read `{display}`: {err}")),
-    };
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() && meta.len() <= MAX_READ_FILE_BYTES => {}
+        _ => {
+            return ToolOutcome::error("edit: target must be a regular file no larger than 8 MiB.")
+        }
+    }
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    let read_result = std::fs::File::open(&path)
+        .and_then(|file| file.take(MAX_READ_FILE_BYTES + 1).read_to_end(&mut bytes));
+    if let Err(err) = read_result {
+        return ToolOutcome::error(format!("edit: cannot read `{display}`: {err}"));
+    }
+    if bytes.len() as u64 > MAX_READ_FILE_BYTES {
+        return ToolOutcome::error("edit: file exceeds 8 MiB limit");
+    }
     let original = match String::from_utf8(bytes) {
         Ok(text) => text,
         Err(_) => {
@@ -232,6 +278,12 @@ pub(crate) fn edit(ctx: &ToolContext, arguments: &Value) -> ToolOutcome {
             ))
         }
     };
+
+    if let Some(expected) = arguments.get("expected_content") {
+        if expected.as_str() != Some(original.as_str()) {
+            return ToolOutcome::error("edit: file changed since it was read; read it again before editing. No changes made.");
+        }
+    }
 
     let (updated, count) =
         match apply_replacements(&original, &replacements, simultaneous, replace_all) {
@@ -265,7 +317,19 @@ fn replacements(arguments: &Value) -> Result<(Vec<Replacement>, bool, bool), Str
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    if let Some(edits) = arguments.get("edits").and_then(Value::as_array) {
+    if let Some(value) = arguments.get("edits") {
+        let edits = value
+            .as_array()
+            .ok_or_else(|| "`edits` must be an array".to_string())?;
+        if edits.len() > 100 {
+            return Err("at most 100 edits are allowed".to_string());
+        }
+        if ["old_string", "new_string", "oldText", "newText"]
+            .iter()
+            .any(|key| arguments.get(*key).is_some())
+        {
+            return Err("use either edits or a single replacement, not both".to_string());
+        }
         if edits.is_empty() {
             return Err("`edits` must contain at least one replacement".to_string());
         }
@@ -455,6 +519,37 @@ mod tests {
     }
 
     #[test]
+    fn append_preserves_content_and_confines_paths() {
+        let (_temp, ctx) = context();
+        assert!(
+            !append(
+                &ctx,
+                &serde_json::json!({"path":"notes/day.txt","content":"first\n"})
+            )
+            .is_error
+        );
+        assert!(
+            !append(
+                &ctx,
+                &serde_json::json!({"path":"notes/day.txt","content":"second\n"})
+            )
+            .is_error
+        );
+        assert_eq!(
+            std::fs::read_to_string(ctx.root.join("notes/day.txt")).unwrap(),
+            "first\nsecond\n"
+        );
+        assert!(
+            append(
+                &ctx,
+                &serde_json::json!({"path":"../outside","content":"x"})
+            )
+            .is_error
+        );
+        assert!(append(&ctx, &serde_json::json!({"path":"notes","content":"x"})).is_error);
+    }
+
+    #[test]
     fn file_tools_reject_escapes() {
         let (_temp, ctx) = context();
         let escape = read(&ctx, &serde_json::json!({"path":"../secret"}));
@@ -531,6 +626,55 @@ mod tests {
             &serde_json::json!({"path":"f.txt","old_string":"hello","new_string":"hello"}),
         );
         assert!(identical.is_error);
+    }
+
+    #[test]
+    fn read_long_unicode_line_keeps_a_valid_boundary() {
+        let (_temp, ctx) = context();
+        std::fs::write(ctx.root.join("long.txt"), "界".repeat(20000)).unwrap();
+        let result = read(&ctx, &serde_json::json!({"path":"long.txt"}));
+        assert!(!result.is_error);
+        assert!(result.content.contains("truncated"));
+    }
+
+    #[test]
+    fn batch_edit_is_all_or_nothing_and_rejects_stale_content() {
+        let (_temp, ctx) = context();
+        let path = ctx.root.join("draft.txt");
+        std::fs::write(&path, "one two three").unwrap();
+        let failed = edit(
+            &ctx,
+            &serde_json::json!({"path":"draft.txt", "edits":[
+                {"old_string":"one", "new_string":"1"},
+                {"old_string":"missing", "new_string":"2"}
+            ]}),
+        );
+        assert!(failed.is_error);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one two three");
+        let stale = edit(
+            &ctx,
+            &serde_json::json!({"path":"draft.txt", "expected_content":"old version", "old_string":"one", "new_string":"1"}),
+        );
+        assert!(stale.is_error);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one two three");
+        let ok = edit(
+            &ctx,
+            &serde_json::json!({"path":"draft.txt", "expected_content":"one two three", "edits":[
+                {"old_string":"one", "new_string":"1"},
+                {"old_string":"three", "new_string":"3"}
+            ]}),
+        );
+        assert!(!ok.is_error, "{}", ok.content);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1 two 3");
+        assert!(
+            edit(
+                &ctx,
+                &serde_json::json!({"path":"draft.txt", "edits":"invalid"})
+            )
+            .is_error
+        );
+        assert!(edit(&ctx, &serde_json::json!({"path":"draft.txt", "edits":[{"old_string":"1 two", "new_string":"a"},{"old_string":"two 3", "new_string":"b"}]})).is_error);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1 two 3");
     }
 
     #[test]

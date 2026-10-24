@@ -13,6 +13,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
 buddy-ai.workspace = true
+reqwest.workspace = true
+scraper = "0.24"
 
 # Used only on Unix to kill a tool's whole process group on cancellation.
 [target.'cfg(unix)'.dependencies]

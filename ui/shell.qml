@@ -106,6 +106,16 @@ ShellRoot {
         if (!label || label==="Ready to place") return blob.placement && blob.placement.anchor && blob.placement.anchor.kind==="workspace" ? "this workspace" : "this window"
         return label.length>38 ? label.slice(0,36).trim()+"…" : label
     }
+    function workingLabel(blob) {
+        const context=blob && blob.context || ({})
+        const working=context.working_context || ({})
+        const workspace=context.tool_workspace || ({})
+        const document=working.document || ({})
+        if(document.path)return String(document.path).split("/").pop()+" · saved file"
+        if(workspace.source==="anchor" || workspace.source==="configured")return String(workspace.root || "").split("/").pop()+" · workspace"
+        if(working.status==="ambiguous")return "Workspace unclear · inspect context"
+        return ""
+    }
     function contextKind(blob) {
         if (!blob) return "window"
         const anchor=blob.placement && blob.placement.anchor || ({})
@@ -502,7 +512,9 @@ ShellRoot {
                         width:parent.width-54;elide:Text.ElideRight
                         anchors.verticalCenter:parent.verticalCenter
                         color:root.muted;font.pixelSize:10;textFormat:Text.PlainText
-                        text:"on "+root.shortLabel(bubble.blob)+(bubble.busy ? "  ·  "+root.stateCaption(bubble.blob) : "")
+                        text:(root.workingLabel(bubble.blob) || "on "+root.shortLabel(bubble.blob))+(bubble.busy ? "  ·  "+root.stateCaption(bubble.blob) : "")
+                        MouseArea {anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:{root.selectedId=bubble.blob.id;root.inspectContext()}}
+
                     }
                     Item {width:4;height:1}
                     Item {
