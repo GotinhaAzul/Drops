@@ -35,6 +35,9 @@ pub enum Command {
     Watch,
     Pointer,
     Toggle,
+    Lively {
+        enabled: bool,
+    },
     Configure {
         /// `custom` keeps the original endpoint fields; `opencode_go` uses the
         /// Opencode Go gateway, its model list, and a stored key.
@@ -123,6 +126,9 @@ pub enum DropAppearance {
     Drop,
     Cat,
     Sprout,
+    Bunny,
+    Robot,
+    Cloud,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +147,9 @@ pub struct Blob {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Opt-in expressive motion and status cues, persisted with app state.
+    #[serde(default)]
+    pub lively: bool,
     #[serde(default)]
     pub connection: Value,
     #[serde(default)]

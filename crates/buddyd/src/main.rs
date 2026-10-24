@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
         serde_json::from_slice(&std::fs::read(data.join("blobs.json"))?)?
     } else {
         Snapshot {
+            lively: false,
             connection: Value::Null,
             appearance: config.appearance.clone(),
             panel_open: false,
@@ -541,6 +542,7 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
     match cmd {
         Command::Status => return Ok(json!({"type":"state","state":public_snapshot(&a.snapshot)})),
         Command::Toggle => a.snapshot.panel_open = !a.snapshot.panel_open,
+        Command::Lively { enabled } => a.snapshot.lively = enabled,
         Command::Create { appearance } => {
             if a.snapshot.blobs.len() >= MAX_BLOBS {
                 bail!("maximum of three drops");
