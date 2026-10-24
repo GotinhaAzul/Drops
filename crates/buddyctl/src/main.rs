@@ -19,6 +19,11 @@ enum Action {
     },
     Watch,
     Toggle,
+    /// Enable or disable expressive animations and status cues.
+    Lively {
+        #[arg(value_parser=["on","off"])]
+        mode: String,
+    },
     Configure {
         base_url: String,
         model: String,
@@ -32,12 +37,12 @@ enum Action {
         screenshots: Option<bool>,
     },
     Create {
-        #[arg(long, default_value="drop",value_parser=["drop","cat","sprout"])]
+        #[arg(long, default_value="drop",value_parser=["drop","cat","sprout","bunny","robot","cloud"])]
         appearance: String,
     },
     Style {
         id: String,
-        #[arg(value_parser=["drop","cat","sprout"])]
+        #[arg(value_parser=["drop","cat","sprout","bunny","robot","cloud"])]
         appearance: String,
     },
     Drop {
@@ -110,6 +115,9 @@ async fn main() -> Result<()> {
         Action::Status { .. } => Command::Status,
         Action::Watch => Command::Watch,
         Action::Toggle => Command::Toggle,
+        Action::Lively { mode } => Command::Lively {
+            enabled: mode == "on",
+        },
         Action::Configure {
             base_url,
             model,
