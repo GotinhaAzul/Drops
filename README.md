@@ -60,7 +60,7 @@ Each message refreshes `working_context`: current directory, repository root/nam
 
 For local office applications (LibreOffice, OnlyOffice, Word/Excel processes), Drops also checks existing `.docx`/`.xlsx` launch paths and open handles in the anchored process tree. The window title can disambiguate those verified candidates. It does not search your Documents folder, inspect browser profiles, or infer a local path from a browser document title. A file that the app no longer holds open and did not expose in its arguments may need an explicit path.
 
-`document_read` reads saved Word paragraphs or Excel sheets/cells and returns a SHA-256 fingerprint. `document_edit` requires approval and that fingerprint, then creates a **new copy** at a nonexisting output path inside the workspace. It never overwrites the open document. Word editing supports unique text replacements within body paragraphs, including across formatting runs; paragraphs with breaks, fields or tracked changes are refused. Excel editing supports literal values in existing cells in one sheet; formula/error cells are read-only, and formula caches can remain stale until the app recalculates the copy. Styles and other archive parts are retained. These tools require Python 3 with only its standard library; no Office installation or API key is needed. Documents are limited to 32 MiB compressed/64 MiB expanded, with smaller XML-part and output limits. Encrypted, signed, macro-enabled, legacy `.doc`/`.xls`, ODF, and web-hosted documents are unsupported. Unsaved app changes are not included.
+`document_read` reads saved Word paragraphs or Excel sheets/cells and returns a SHA-256 fingerprint. `document_edit` requires approval and that fingerprint, then creates a **new copy** at a nonexisting output path inside the workspace. It never overwrites the open document. Word editing supports unique text replacements within body paragraphs, including across formatting runs; paragraphs with breaks, fields or tracked changes are refused. Excel editing supports literal values in existing cells in one sheet; formula/error cells and all cells covered by array-formula ranges are read-only, and formula caches can remain stale until the app recalculates the copy. Styles and other archive parts are retained. These tools require Python 3 with only its standard library; no Office installation or API key is needed. Documents are limited to 32 MiB compressed/64 MiB expanded, with smaller XML-part and output limits. Encrypted, signed, macro-enabled, legacy `.doc`/`.xls`, ODF, and web-hosted documents are unsupported. Unsaved app changes are not included.
 
 The chat header shows the selected workspace or saved document when context is available; click it to inspect the evidence and actual tool boundary. Detection refreshes when a message is sent.
 
@@ -90,6 +90,7 @@ mise exec -- cargo fmt --all -- --check
 mise exec -- cargo test -p buddy-agent live_ -- --ignored
 python3 tests/smoke.py
 python3 tests/office-tools.py
+python3 tests/office-array-formulas.py
 # Optional compatibility checks using independently installed Office readers
 uv run --with python-docx --with openpyxl python tests/office-compat.py
 python3 tests/widget-smoke.py

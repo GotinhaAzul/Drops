@@ -174,10 +174,25 @@ def xlsx(archive, args, editing):
     edits = args.get('cells')
     if not isinstance(edits,list) or not 1 <= len(edits) <= 100:
         raise ValueError('XLSX requires 1–100 cell edits in one sheet')
+    array_ranges = []
+    for formula in elements(dom,S,'f'):
+        if formula.getAttribute('t') != 'array':
+            continue
+        reference = formula.getAttribute('ref')
+        if not re.fullmatch(r'\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}(?::\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6})?', reference):
+            raise ValueError('invalid array-formula range; worksheet cannot be safely edited')
+        bounds = reference.replace('$','').split(':')
+        first = address(bounds[0])
+        last = address(bounds[-1])
+        if first[0]>last[0] or first[1]>last[1]:
+            raise ValueError('invalid array-formula range; worksheet cannot be safely edited')
+        array_ranges.append((first,last))
     seen = set()
     for edit in edits:
         ref = edit.get('cell')
         row_number,col = address(ref)
+        if any(r1<=row_number<=r2 and c1<=col<=c2 for (r1,c1),(r2,c2) in array_ranges):
+            raise ValueError('array-formula cells are read-only, including cached result cells')
         if ref in seen: raise ValueError('duplicate cell edit')
         seen.add(ref)
         for merged in elements(dom,S,'mergeCell'):
