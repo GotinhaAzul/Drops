@@ -67,7 +67,7 @@ You type a message, for example "summarize the error in this terminal" or "clean
 
 ### 6.5 Approvals
 
-Before a risky action, the blob pauses and shows exactly what it intends to do. You approve or deny with one click or key. Safe, read-only actions run without interruption.
+Before a risky action, the blob pauses and shows exactly what it intends to do. You approve or deny with one click or key. Safe, read-only actions run without interruption. An explicit sudo mode can skip those prompts for the whole app while keeping validation and workspace limits.
 
 ## 7. Context capture
 
@@ -106,7 +106,7 @@ Tools can exist only while a blob is anchored to a matching target. A terminal a
 
 ### 8.3 Risk levels
 
-Every tool is classified as read-only, mutating, or dangerous. Read-only runs automatically, mutating requires approval by default, and dangerous always requires explicit confirmation. Users can tune these defaults per anchor type and per tool.
+Every tool is classified as read-only, mutating, or dangerous. Read-only runs automatically, mutating requires approval by default, and dangerous requires explicit confirmation unless the user enables sudo mode. Users can tune these defaults per anchor type and per tool.
 
 ## 9. Customization and extensibility
 

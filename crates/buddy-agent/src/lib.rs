@@ -44,6 +44,10 @@ use crate::tools::{Risk, ToolRegistry};
 /// canonical sandbox root for read/write/edit (and the working directory for
 /// bash and external tools). `instructions` is the base system prompt supplied
 /// by the daemon; layered `AGENTS.md`/`.drops/*.md` files are appended to it.
+///
+/// `sudo` is the user's explicit opt-in to run tools that normally require
+/// approval without prompting. It never widens capability: `allow_shell` still
+/// gates bash, and sandbox and validation rules still apply.
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
     pub provider: buddy_ai::ProviderConfig,
@@ -51,6 +55,7 @@ pub struct AgentConfig {
     pub project_dir: PathBuf,
     pub instructions: String,
     pub max_turns: usize,
+    pub sudo: bool,
     pub external_tools: Vec<ExternalTool>,
     /// Tools supplied by the desktop layer for this run only.
     ///
@@ -171,7 +176,9 @@ pub fn session_path(dir: &Path, id: &str) -> Result<PathBuf> {
 ///
 /// Approvals are consumed one `bool` per tool that needs approval. Denial,
 /// a closed approvals channel, or cancellation means the action is not
-/// performed; there is no bypass.
+/// performed; there is no bypass through those paths. `AgentConfig::sudo` is
+/// the one explicit exception, chosen by the user in the UI: it skips the
+/// prompt, not validation or the sandbox.
 // The eight-argument signature is fixed by docs/contracts.md.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -550,6 +557,8 @@ impl Engine {
             // Build a concrete, read-only preview before asking. A file change
             // that cannot apply (missing target, stale expected content, bad
             // match) is reported now, without an approval prompt or mutation.
+            // The preview also freezes the exact target, so it still runs in
+            // sudo mode: a call that cannot apply fails before touching disk.
             let preview = match self.registry.preview(&tool, &arguments) {
                 Ok(preview) => preview,
                 Err(error) => {
@@ -561,17 +570,21 @@ impl Engine {
                     }
                 }
             };
-            match self.approval(name, &arguments, risk, preview.as_ref()).await {
-                Approval::Approved => {}
-                Approval::Denied => {
-                    return CallOutcome::Finished {
-                        content: format!(
-                            "The user denied approval for `{name}`. The action was not performed. Do not retry it unless the user asks."
-                        ),
-                        is_error: true,
+            // Sudo mode skips only the prompt; validation, freezing and the
+            // sandbox above still apply to every call.
+            if !self.config.sudo {
+                match self.approval(name, &arguments, risk, preview.as_ref()).await {
+                    Approval::Approved => {}
+                    Approval::Denied => {
+                        return CallOutcome::Finished {
+                            content: format!(
+                                "The user denied approval for `{name}`. The action was not performed. Do not retry it unless the user asks."
+                            ),
+                            is_error: true,
+                        }
                     }
+                    Approval::Cancelled => return CallOutcome::Cancelled,
                 }
-                Approval::Cancelled => return CallOutcome::Cancelled,
             }
         }
 
@@ -657,6 +670,7 @@ mod tests {
             project_dir: project,
             instructions: "Test instructions.".into(),
             max_turns,
+            sudo: false,
             external_tools: Vec::new(),
             context_tools: Vec::new(),
         };
@@ -1124,6 +1138,181 @@ mod tests {
         );
         assert!(config.project_dir.join("a.txt").is_file());
         assert!(!config.project_dir.join("b.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn sudo_runs_mutations_and_shell_without_an_approval_prompt() {
+        let (_temp, mut config) = setup(5);
+        config.sudo = true;
+        let mut turn = 0;
+        let _mock = test_support::install(move |_messages, _tools| {
+            turn += 1;
+            match turn {
+                1 => Ok(two_calls(
+                    (
+                        "w1",
+                        "write",
+                        json!({"path":"sudo.txt","content":"written"}),
+                    ),
+                    ("b1", "bash", json!({"command":"printf ran > shell.txt"})),
+                )),
+                _ => Ok(text("done")),
+            }
+        });
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        // Nothing is queued: a prompt would deny the call instead of hanging.
+        let (_approval_tx, approval_rx) = approvals(vec![]);
+        run(
+            config.clone(),
+            "sudo".into(),
+            "write and run".into(),
+            json!({}),
+            true,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let events = drain(rx);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "approval")
+                .count(),
+            0
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "tool_result" && event["is_error"] == false)
+                .count(),
+            2
+        );
+        assert_eq!(
+            std::fs::read_to_string(config.project_dir.join("sudo.txt")).unwrap(),
+            "written"
+        );
+        assert_eq!(
+            std::fs::read_to_string(config.project_dir.join("shell.txt")).unwrap(),
+            "ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn sudo_still_rejects_an_unusable_mutation_before_touching_disk() {
+        let (_temp, mut config) = setup(4);
+        config.sudo = true;
+        std::fs::write(config.project_dir.join("note.txt"), "current\n").unwrap();
+        let mut turn = 0;
+        let _mock = test_support::install(move |_messages, _tools| {
+            turn += 1;
+            match turn {
+                1 => Ok(call(
+                    "e1",
+                    "edit",
+                    json!({
+                        "path":"note.txt",
+                        "old_string":"current",
+                        "new_string":"x",
+                        "expected_content":"stale\n"
+                    }),
+                )),
+                _ => Ok(text("understood")),
+            }
+        });
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = approvals(vec![]);
+        run(
+            config.clone(),
+            "sudo-stale".into(),
+            "edit the note".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let events = drain(rx);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "approval")
+                .count(),
+            0
+        );
+        let result = events
+            .iter()
+            .find(|event| event["type"] == "tool_result")
+            .unwrap();
+        assert_eq!(result["is_error"], true);
+        let text = result["text"].as_str().unwrap();
+        assert!(text.contains("Cannot prepare"), "{text}");
+        assert!(text.contains("No changes made"), "{text}");
+        assert_eq!(
+            std::fs::read_to_string(config.project_dir.join("note.txt")).unwrap(),
+            "current\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn sudo_does_not_grant_shell_where_it_is_disallowed() {
+        let (_temp, mut config) = setup(3);
+        config.sudo = true;
+        let mut turn = 0;
+        let _mock = test_support::install(move |_messages, _tools| {
+            turn += 1;
+            match turn {
+                1 => Ok(call(
+                    "b1",
+                    "bash",
+                    json!({"command":"printf no > shell.txt"}),
+                )),
+                _ => Ok(text("understood")),
+            }
+        });
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (_approval_tx, approval_rx) = approvals(vec![]);
+        run(
+            config.clone(),
+            "sudo-noshell".into(),
+            "run a command".into(),
+            json!({}),
+            false,
+            tx,
+            approval_rx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let events = drain(rx);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "approval")
+                .count(),
+            0
+        );
+        let result = events
+            .iter()
+            .find(|event| event["type"] == "tool_result")
+            .unwrap();
+        assert_eq!(result["is_error"], true);
+        // Sudo only removes the prompt; without allow_shell the tool is not
+        // even advertised for this turn.
+        assert!(result["text"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown tool `bash`"));
+        assert!(!config.project_dir.join("shell.txt").exists());
     }
 
     #[tokio::test]

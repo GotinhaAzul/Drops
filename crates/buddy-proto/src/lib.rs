@@ -35,6 +35,10 @@ pub enum Command {
     Watch,
     Pointer,
     Toggle,
+    /// Run tools that normally need approval without asking first.
+    Sudo {
+        enabled: bool,
+    },
     Lively {
         enabled: bool,
     },
@@ -147,6 +151,10 @@ pub struct Blob {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Explicit opt-in "sudo" mode: mutating and dangerous tools run without a
+    /// per-call approval prompt. Defaults off, including for old state files.
+    #[serde(default)]
+    pub sudo: bool,
     /// Opt-in expressive motion and status cues, persisted with app state.
     #[serde(default)]
     pub lively: bool,

@@ -19,6 +19,11 @@ enum Action {
     },
     Watch,
     Toggle,
+    /// Enable or disable running tools without per-call approval.
+    Sudo {
+        #[arg(value_parser = ["on", "off"])]
+        mode: String,
+    },
     /// Enable or disable expressive animations and status cues.
     Lively {
         #[arg(value_parser=["on","off"])]
@@ -119,6 +124,9 @@ async fn main() -> Result<()> {
         Action::Status { .. } => Command::Status,
         Action::Watch => Command::Watch,
         Action::Toggle => Command::Toggle,
+        Action::Sudo { mode } => Command::Sudo {
+            enabled: mode == "on",
+        },
         Action::Lively { mode } => Command::Lively {
             enabled: mode == "on",
         },

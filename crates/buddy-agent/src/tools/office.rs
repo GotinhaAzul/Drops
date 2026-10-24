@@ -22,7 +22,7 @@ pub(super) fn definition(edit: bool) -> Value {
     }
     json!({"type":"function","function":{
         "name":if edit {"document_edit"}else{"document_read"},
-        "description":if edit {"Create an edited copy of a saved DOCX/XLSX document after approval. Read it first for its fingerprint. Supports simple Word text replacements and existing Excel literal cells. Preserves other ZIP parts and never overwrites the source or existing output. No macros, encryption, signatures or web documents. Requires Python 3."} else {"Inspect saved local DOCX/XLSX content and return a SHA-256 fingerprint. Word paragraphs or Excel sheet/cell values, including stored formulas. Does not see unsaved app changes, run macros, or calculate formulas. UTF-8 JSON output. Requires Python 3."},
+        "description":if edit {"Create an edited copy of a saved DOCX/XLSX document after approval (unless sudo mode is enabled). Read it first for its fingerprint. Supports simple Word text replacements and existing Excel literal cells. Preserves other ZIP parts and never overwrites the source or existing output. No macros, encryption, signatures or web documents. Requires Python 3."} else {"Inspect saved local DOCX/XLSX content and return a SHA-256 fingerprint. Word paragraphs or Excel sheet/cell values, including stored formulas. Does not see unsaved app changes, run macros, or calculate formulas. UTF-8 JSON output. Requires Python 3."},
         "parameters":{"type":"object","properties":properties,"required":if edit {vec!["path","output_path","expected_sha256"]}else{vec!["path"]}}
     }})
 }

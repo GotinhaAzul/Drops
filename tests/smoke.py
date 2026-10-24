@@ -30,7 +30,9 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         messages = body["messages"]
         has_result = bool(messages) and messages[-1].get("role") == "tool"
         prompt = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-        filename = "cancelled.txt" if "cancel" in prompt else "denied.txt" if "deny" in prompt else "note.txt"
+        filename = ("cancelled.txt" if "cancel" in prompt else
+                    "denied.txt" if "deny" in prompt else
+                    "sudo.txt" if "sudo" in prompt else "note.txt")
         if "remember" in prompt:
             tool = {"index": 0, "id": "call_memory", "type": "function", "function": {
                 "name": "task_memory",
@@ -130,6 +132,16 @@ def main():
                 ctl("confirm", second, "--deny")
                 wait(lambda s: next(b for b in s["blobs"] if b["id"] == second)["state"] == "idle")
                 assert not (project / "denied.txt").exists()
+                # Sudo mode skips only the prompt: the same validated write path
+                # runs and no approval card is left pending.
+                ctl("sudo", "on")
+                assert status()["sudo"] is True
+                ctl("send", second, "sudo write this file")
+                sudo_state = wait(lambda s: next(b for b in s["blobs"] if b["id"] == second)["state"] == "idle")
+                assert (project / "sudo.txt").read_text() == "approved by smoke test\n"
+                assert not any(b["approval"] for b in sudo_state["blobs"]), sudo_state
+                ctl("sudo", "off")
+                assert status()["sudo"] is False
                 # Task memory is session-scoped, exported with the JSONL, copied
                 # by fork and deleted by clear.
                 ctl("send", blob, "remember the release plan")
@@ -177,7 +189,7 @@ def main():
                 private_env = {k:v for k,v in env.items() if k not in ("DROPS_SOCKET", "XDG_RUNTIME_DIR")}
                 refused = subprocess.run([str(BIN / "buddyctl"), "status"], env=private_env, capture_output=True, text=True)
                 assert refused.returncode != 0 and "explicit private" in refused.stderr
-                print("PASS: streaming tool round trip, approval gate, file write, context, export/fork/clear, blob cap, malformed IPC, denial, active cancellation, busy-session guard, JSONL recovery, session removal, socket permissions")
+                print("PASS: streaming tool round trip, approval gate, sudo mode, file write, context, export/fork/clear, blob cap, malformed IPC, denial, active cancellation, busy-session guard, JSONL recovery, session removal, socket permissions")
             except Exception:
                 log.flush()
                 log.seek(0)
