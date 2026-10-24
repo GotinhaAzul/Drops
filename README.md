@@ -16,7 +16,7 @@ This installs Drops under `~/.local` and enables a small native widget in the Om
 - Choose **Drop**, **Cat**, or **Sprout** to change that drop’s appearance.
 - Drag the avatar onto a window or empty workspace. A floating avatar follows the pointer with pickup and settle animations, and the panel closes after placement.
 - A window drop is deleted when its attached window closes. A workspace drop stays until you delete it.
-- **⚙ Model connection** lets you paste the endpoint URL, enter the model name and save. For authentication, enter the name of an existing API-key environment variable; the key itself is never stored in TOML. A missing config is supported for first-run setup.
+- **⚙ Model connection** offers two choices. **Custom endpoint** (the default) keeps the original bring-your-own OpenAI-compatible setup: paste the endpoint URL, enter the model name and, optionally, the name of an environment variable that holds the key. **Opencode Go** asks for an Opencode Go API key, loads the gateway's model list, and lets you pick a model. Each drop sends its own stable session id, as the gateway recommends for routing and prompt caching. A missing config is supported for first-run setup.
 
 Click a placed drop to open its in-place chat bubble. It greets the anchored window, offers contextual quick actions, and grows into a scrollable conversation. Sending collapses the bubble; the reply returns as a short, truncated bubble above the drop, and clicking it or the drop reopens the full conversation. Idle drops shrink to colored dots. Click the anchor label to inspect context; Enter sends, Escape closes, and the stop icon cancels the current turn. `buddyctl cancel` stops all turns.
 
@@ -34,6 +34,8 @@ buddyctl toggle
 buddyctl create --appearance cat
 buddyctl style BLOB_ID sprout
 buddyctl configure http://localhost:11434/v1 MODEL_NAME
+OPENCODE_API_KEY=... buddyctl configure https://opencode.ai/zen/go/v1 MODEL --mode opencode-go
+OPENCODE_API_KEY=... buddyctl models # list models; a key saved in settings also works
 buddyctl drop 300 200
 buddyctl send BLOB_ID 'What is open here?'
 buddyctl context BLOB_ID
@@ -48,7 +50,7 @@ buddyctl watch
 
 `DROPS_SOCKET` overrides the socket path (default `$XDG_RUNTIME_DIR/drops.sock`). If `XDG_RUNTIME_DIR` is absent, an explicit private `DROPS_SOCKET` path is required. `buddyd --config PATH --data-dir PATH --headless` supports isolated development without desktop access. Headless anchors are explicitly synthetic workspaces and have no shell capability.
 
-The socket uses newline-delimited JSON and mode 0600. `buddyctl bridge` connects stdin/stdout bidirectionally for the QML shell. `docs/contracts.md` describes crate boundaries. Sessions and blob metadata live under `$XDG_DATA_HOME/drops` (default `~/.local/share/drops`); API keys are read from the environment variable named by `api_key_env` and are never written by Drops.
+The socket uses newline-delimited JSON and mode 0600. `buddyctl bridge` connects stdin/stdout bidirectionally for the QML shell. `docs/contracts.md` describes crate boundaries. Sessions and blob metadata live under `$XDG_DATA_HOME/drops` (default `~/.local/share/drops`). A custom endpoint reads its key from the environment variable named by `api_key_env`. Opencode Go accepts `OPENCODE_API_KEY` too; a key entered in settings is stored only in the Drops config file, which is written with mode 0600 and is never included in UI state or logs. The settings screen masks it, and leaving the field blank keeps the saved key.
 
 ## Working with the anchored app
 
@@ -100,6 +102,7 @@ python3 tests/office-array-formulas.py
 uv run --with python-docx --with openpyxl python tests/office-compat.py
 python3 tests/widget-smoke.py
 python3 tests/qml-interactions.py
+python3 tests/qml-opencode-settings.py
 python3 tests/qml-bubble.py
 python3 tests/qml-bubble-position.py
 python3 tests/failure-smoke.py

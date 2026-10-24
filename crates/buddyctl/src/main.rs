@@ -22,6 +22,8 @@ enum Action {
     Configure {
         base_url: String,
         model: String,
+        #[arg(long, default_value = "custom", value_parser = ["custom", "opencode-go"])]
+        mode: String,
         #[arg(long, default_value = "")]
         api_key_env: String,
         #[arg(long)]
@@ -31,6 +33,8 @@ enum Action {
         #[arg(long)]
         screenshots: Option<bool>,
     },
+    /// List models available to the active Opencode Go connection.
+    Models,
     Create {
         #[arg(long, default_value="drop",value_parser=["drop","cat","sprout"])]
         appearance: String,
@@ -113,18 +117,26 @@ async fn main() -> Result<()> {
         Action::Configure {
             base_url,
             model,
+            mode,
             api_key_env,
             vision,
             capture_content,
             screenshots,
         } => Command::Configure {
-            base_url,
-            model,
-            api_key_env,
+            mode: Some(if mode == "opencode-go" {
+                "opencode_go".to_string()
+            } else {
+                "custom".to_string()
+            }),
+            base_url: Some(base_url),
+            model: Some(model),
+            api_key_env: Some(api_key_env),
+            api_key: None,
             vision,
             capture_content,
             screenshots,
         },
+        Action::Models => Command::Models { api_key: None },
         Action::Create { appearance } => Command::Create {
             appearance: serde_json::from_value(serde_json::json!(appearance))?,
         },

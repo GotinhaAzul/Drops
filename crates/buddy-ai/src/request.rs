@@ -19,6 +19,19 @@ pub fn endpoint(base_url: &str) -> String {
     }
 }
 
+/// Resolve the model-list endpoint from a configured base URL.
+///
+/// Accepts a root, a chat-completions URL, or an already-complete `/models`
+/// URL so the same custom and Opencode Go values work for both calls.
+pub fn models_endpoint(base_url: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.ends_with("/models") {
+        return base.to_string();
+    }
+    let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+    format!("{base}/models")
+}
+
 /// Build an OpenAI-compatible chat-completions request body.
 ///
 /// `messages` and `tools` are OpenAI wire objects. Tools are only included when
@@ -90,6 +103,26 @@ mod tests {
         assert_eq!(
             endpoint("  http://example.test/v1///  "),
             "http://example.test/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn models_endpoint_handles_roots_and_full_urls() {
+        assert_eq!(
+            models_endpoint("https://opencode.ai/zen/go/v1"),
+            "https://opencode.ai/zen/go/v1/models"
+        );
+        assert_eq!(
+            models_endpoint("https://opencode.ai/zen/go/v1/"),
+            "https://opencode.ai/zen/go/v1/models"
+        );
+        assert_eq!(
+            models_endpoint("https://opencode.ai/zen/go/v1/chat/completions"),
+            "https://opencode.ai/zen/go/v1/models"
+        );
+        assert_eq!(
+            models_endpoint("https://opencode.ai/zen/go/v1/models"),
+            "https://opencode.ai/zen/go/v1/models"
         );
     }
 

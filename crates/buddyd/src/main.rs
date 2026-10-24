@@ -428,10 +428,15 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
             Err(_) => json!({"type":"pointer","cursor":null}),
         });
     }
+    if let Command::Models { api_key } = &cmd {
+        return available_models(app, api_key.as_ref().map(|key| key.expose().to_string())).await;
+    }
     if let Command::Configure {
+        mode,
         base_url,
         model,
         api_key_env,
+        api_key,
         vision,
         capture_content,
         screenshots,
@@ -439,9 +444,11 @@ async fn handle(cmd: Command, app: &Shared) -> Result<Value> {
     {
         return configure(
             app,
+            mode,
             base_url,
             model,
             api_key_env,
+            api_key.map(|key| key.expose().to_string()),
             vision,
             capture_content,
             screenshots,
@@ -703,22 +710,134 @@ async fn remove_blob(app: &Shared, id: &str) -> Result<Value> {
     Ok(json!({"type":"ok"}))
 }
 
-fn connection(config: &Config) -> Value {
-    let p = &config.provider[&config.active_provider];
-    json!({"base_url":p.base_url,"model":p.model,"api_key_env":p.api_key_env,"vision":p.vision,"capture_content":config.capture.enabled,"screenshots":config.capture.screenshots})
+const OPENCODE_GO_PROVIDER: &str = "opencode-go";
+const LOCAL_PROVIDER: &str = "local";
+
+fn environment_key_present(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && std::env::var(name)
+            .map(|key| !key.trim().is_empty())
+            .unwrap_or(false)
 }
-async fn configure(
-    app: &Shared,
-    base_url: String,
-    model: String,
-    api_key_env: String,
-    vision: Option<bool>,
-    capture_content: Option<bool>,
-    screenshots: Option<bool>,
-) -> Result<Value> {
-    let base_url = base_url.trim().trim_end_matches('/').to_string();
-    let model = model.trim().to_string();
-    let api_key_env = api_key_env.trim().to_string();
+
+fn key_available(provider: &buddy_ai::ProviderConfig) -> bool {
+    provider
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|key| !key.is_empty())
+        || environment_key_present(&provider.api_key_env)
+}
+
+fn provider_for_run(
+    provider: &buddy_ai::ProviderConfig,
+    session_id: &str,
+) -> buddy_ai::ProviderConfig {
+    let mut provider = provider.clone();
+    if provider.kind == buddy_ai::ProviderKind::OpencodeGo {
+        provider.session_id = Some(session_id.to_string());
+    }
+    provider
+}
+
+fn provider_summary(provider: &buddy_ai::ProviderConfig) -> Value {
+    json!({
+        "base_url": provider.base_url,
+        "model": provider.model,
+        "api_key_env": provider.api_key_env,
+        "has_api_key": key_available(provider),
+        "vision": provider.vision,
+    })
+}
+
+fn custom_provider_entry<'a>(
+    config: &'a Config,
+    active: &'a buddy_ai::ProviderConfig,
+) -> Option<(&'a str, &'a buddy_ai::ProviderConfig)> {
+    if active.kind == buddy_ai::ProviderKind::Custom {
+        return Some((config.active_provider.as_str(), active));
+    }
+    if let Some((name, provider)) = config.provider.get_key_value(LOCAL_PROVIDER) {
+        if provider.kind == buddy_ai::ProviderKind::Custom {
+            return Some((name.as_str(), provider));
+        }
+    }
+    config
+        .provider
+        .iter()
+        .find(|(_, provider)| provider.kind == buddy_ai::ProviderKind::Custom)
+        .map(|(name, provider)| (name.as_str(), provider))
+}
+
+fn custom_provider<'a>(
+    config: &'a Config,
+    active: &'a buddy_ai::ProviderConfig,
+) -> Option<&'a buddy_ai::ProviderConfig> {
+    custom_provider_entry(config, active).map(|(_, provider)| provider)
+}
+
+fn opencode_provider<'a>(
+    config: &'a Config,
+    active: &'a buddy_ai::ProviderConfig,
+) -> Option<&'a buddy_ai::ProviderConfig> {
+    if active.kind == buddy_ai::ProviderKind::OpencodeGo {
+        Some(active)
+    } else {
+        config
+            .provider
+            .get(OPENCODE_GO_PROVIDER)
+            .filter(|provider| provider.kind == buddy_ai::ProviderKind::OpencodeGo)
+    }
+}
+
+fn connection(config: &Config) -> Value {
+    let active = &config.provider[&config.active_provider];
+    let custom = custom_provider(config, active)
+        .map(provider_summary)
+        .unwrap_or_else(|| {
+            json!({
+                "base_url": "http://localhost:11434/v1",
+                "model": "",
+                "api_key_env": "",
+                "has_api_key": false,
+                "vision": false,
+            })
+        });
+    let opencode_go = opencode_provider(config, active)
+        .map(provider_summary)
+        .unwrap_or_else(|| {
+            json!({
+                "base_url": buddy_ai::OPENCODE_GO_BASE_URL,
+                "model": "",
+                "api_key_env": buddy_ai::OPENCODE_GO_API_KEY_ENV,
+                "has_api_key": false,
+                "vision": false,
+            })
+        });
+    let mut summary = provider_summary(active);
+    summary["mode"] = json!(active.kind);
+    summary["capture_content"] = json!(config.capture.enabled);
+    summary["screenshots"] = json!(config.capture.screenshots);
+    summary["custom"] = custom;
+    summary["opencode_go"] = opencode_go;
+    summary
+}
+
+fn normalize_mode(
+    mode: Option<String>,
+    active: &buddy_ai::ProviderConfig,
+) -> Result<buddy_ai::ProviderKind> {
+    match mode.as_deref().map(str::trim) {
+        None | Some("") => Ok(active.kind),
+        Some("custom") => Ok(buddy_ai::ProviderKind::Custom),
+        Some("opencode_go" | "opencode-go") => Ok(buddy_ai::ProviderKind::OpencodeGo),
+        Some(other) => bail!("Unknown connection mode: {other}"),
+    }
+}
+
+fn validate_endpoint(value: &str) -> Result<String> {
+    let base_url = value.trim().trim_end_matches('/').to_string();
     let parsed =
         reqwest::Url::parse(&base_url).context("Enter a valid http:// or https:// endpoint URL")?;
     if !matches!(parsed.scheme(), "http" | "https")
@@ -730,28 +849,196 @@ async fn configure(
     {
         bail!("Use an HTTP(S) endpoint without credentials, query parameters, or a fragment; put authentication in an API-key environment variable");
     }
+    Ok(base_url)
+}
+
+fn validate_model(value: &str) -> Result<String> {
+    let model = value.trim().to_string();
     if model.is_empty() || model.len() > 256 {
         bail!("Enter a model name (up to 256 characters)");
     }
-    if !api_key_env.is_empty()
-        && (!api_key_env
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            || api_key_env.starts_with(|c: char| c.is_ascii_digit()))
+    Ok(model)
+}
+
+fn validate_api_key_env(value: &str) -> Result<String> {
+    let name = value.trim().to_string();
+    if !name.is_empty()
+        && (!name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || name.starts_with(|c: char| c.is_ascii_digit()))
     {
         bail!("Enter a valid environment variable name, not an API key");
     }
-    let (path, active, gate) = {
+    Ok(name)
+}
+
+fn validate_api_key(value: &str) -> Result<String> {
+    let key = value.trim();
+    if key.is_empty() {
+        bail!("Enter an Opencode Go API key");
+    }
+    if key.len() > 4096 {
+        bail!("The Opencode Go API key is too long");
+    }
+    if key.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        bail!("The Opencode Go API key contains invalid whitespace or control characters");
+    }
+    Ok(key.to_string())
+}
+
+#[derive(Clone)]
+struct ProviderUpdate {
+    name: String,
+    kind: buddy_ai::ProviderKind,
+    base_url: String,
+    model: String,
+    api_key_env: String,
+    api_key: Option<String>,
+    vision: Option<bool>,
+    capture_content: Option<bool>,
+    screenshots: Option<bool>,
+}
+
+impl std::fmt::Debug for ProviderUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderUpdate")
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key_env", &self.api_key_env)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("vision", &self.vision)
+            .field("capture_content", &self.capture_content)
+            .field("screenshots", &self.screenshots)
+            .finish()
+    }
+}
+
+/// Validate a configure request against the saved providers.
+///
+/// Switching modes never overwrites the other mode's endpoint settings, and an
+/// empty Opencode Go key keeps the stored key. The key is only ever placed in
+/// `ProviderUpdate::api_key`; errors never include it.
+#[allow(clippy::too_many_arguments)]
+fn prepare_update(
+    config: &Config,
+    mode: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    api_key_env: Option<String>,
+    api_key: Option<String>,
+    vision: Option<bool>,
+    capture_content: Option<bool>,
+    screenshots: Option<bool>,
+) -> Result<ProviderUpdate> {
+    let active = config
+        .provider
+        .get(&config.active_provider)
+        .context("active provider missing")?;
+    let kind = normalize_mode(mode, active)?;
+    let (name, base_url, model, api_key_env, api_key) = match kind {
+        buddy_ai::ProviderKind::Custom => {
+            let existing = custom_provider_entry(config, active);
+            let name = existing
+                .map(|(name, _)| name.to_string())
+                .unwrap_or_else(|| LOCAL_PROVIDER.to_string());
+            let base_url = match base_url.map(|value| value.trim().to_string()) {
+                Some(value) if !value.is_empty() => value,
+                _ => existing
+                    .map(|(_, provider)| provider.base_url.clone())
+                    .unwrap_or_default(),
+            };
+            let model = match model.map(|value| value.trim().to_string()) {
+                Some(value) if !value.is_empty() => value,
+                _ => existing
+                    .map(|(_, provider)| provider.model.clone())
+                    .unwrap_or_default(),
+            };
+            let api_key_env = match api_key_env {
+                Some(value) => value,
+                None => existing
+                    .map(|(_, provider)| provider.api_key_env.clone())
+                    .unwrap_or_default(),
+            };
+            (
+                name,
+                validate_endpoint(&base_url)?,
+                validate_model(&model)?,
+                validate_api_key_env(&api_key_env)?,
+                None,
+            )
+        }
+        buddy_ai::ProviderKind::OpencodeGo => {
+            let existing = opencode_provider(config, active);
+            let model = match model.map(|value| value.trim().to_string()) {
+                Some(value) if !value.is_empty() => value,
+                _ => existing.map(|p| p.model.clone()).unwrap_or_default(),
+            };
+            let model = validate_model(&model)?;
+            let stored = existing
+                .and_then(|p| p.api_key.clone())
+                .filter(|key| !key.trim().is_empty());
+            let key = match api_key.map(|value| value.trim().to_string()) {
+                Some(value) if !value.is_empty() => Some(validate_api_key(&value)?),
+                _ => stored,
+            };
+            if key.is_none() && !environment_key_present(buddy_ai::OPENCODE_GO_API_KEY_ENV) {
+                bail!("Enter an Opencode Go API key or set OPENCODE_API_KEY");
+            }
+            (
+                OPENCODE_GO_PROVIDER.to_string(),
+                buddy_ai::OPENCODE_GO_BASE_URL.to_string(),
+                model,
+                buddy_ai::OPENCODE_GO_API_KEY_ENV.to_string(),
+                key,
+            )
+        }
+    };
+    Ok(ProviderUpdate {
+        name,
+        kind,
+        base_url,
+        model,
+        api_key_env,
+        api_key,
+        vision,
+        capture_content,
+        screenshots,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn configure(
+    app: &Shared,
+    mode: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    api_key_env: Option<String>,
+    api_key: Option<String>,
+    vision: Option<bool>,
+    capture_content: Option<bool>,
+    screenshots: Option<bool>,
+) -> Result<Value> {
+    let update = {
         let a = app.lock().await;
-        (
-            a.config_path.clone(),
-            a.config.active_provider.clone(),
-            a.persist_gate.clone(),
-        )
+        prepare_update(
+            &a.config,
+            mode,
+            base_url,
+            model,
+            api_key_env,
+            api_key,
+            vision,
+            capture_content,
+            screenshots,
+        )?
+    };
+    let (path, gate) = {
+        let a = app.lock().await;
+        (a.config_path.clone(), a.persist_gate.clone())
     };
     let guard = gate.lock().await;
-    let (saved_url, saved_model, saved_env) =
-        (base_url.clone(), model.clone(), api_key_env.clone());
+    let saved = update.clone();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let mut value: toml::Value = match std::fs::read_to_string(&path) {
             Ok(s) => toml::from_str(&s)?,
@@ -765,7 +1052,7 @@ async fn configure(
             .context("Config must be a TOML table")?;
         table.insert(
             "active_provider".into(),
-            toml::Value::String(active.clone()),
+            toml::Value::String(saved.name.clone()),
         );
         let providers = table
             .entry("provider")
@@ -773,26 +1060,39 @@ async fn configure(
             .as_table_mut()
             .context("provider must be a TOML table")?;
         let provider = providers
-            .entry(active)
+            .entry(saved.name.clone())
             .or_insert_with(|| toml::Value::Table(Default::default()))
             .as_table_mut()
             .context("provider entry must be a TOML table")?;
-        provider.insert("base_url".into(), toml::Value::String(saved_url));
-        provider.insert("model".into(), toml::Value::String(saved_model));
-        provider.insert("api_key_env".into(), toml::Value::String(saved_env));
-        if let Some(value) = vision {
+        provider.insert(
+            "kind".into(),
+            toml::Value::String(
+                match saved.kind {
+                    buddy_ai::ProviderKind::Custom => "custom",
+                    buddy_ai::ProviderKind::OpencodeGo => "opencode_go",
+                }
+                .to_string(),
+            ),
+        );
+        provider.insert("base_url".into(), toml::Value::String(saved.base_url));
+        provider.insert("model".into(), toml::Value::String(saved.model));
+        provider.insert("api_key_env".into(), toml::Value::String(saved.api_key_env));
+        if let Some(key) = saved.api_key {
+            provider.insert("api_key".into(), toml::Value::String(key));
+        }
+        if let Some(value) = saved.vision {
             provider.insert("vision".into(), toml::Value::Boolean(value));
         }
-        if capture_content.is_some() || screenshots.is_some() {
+        if saved.capture_content.is_some() || saved.screenshots.is_some() {
             let capture = table
                 .entry("capture")
                 .or_insert_with(|| toml::Value::Table(Default::default()))
                 .as_table_mut()
                 .context("capture must be a TOML table")?;
-            if let Some(value) = capture_content {
+            if let Some(value) = saved.capture_content {
                 capture.insert("enabled".into(), toml::Value::Boolean(value));
             }
-            if let Some(value) = screenshots {
+            if let Some(value) = saved.screenshots {
                 capture.insert("screenshots".into(), toml::Value::Boolean(value));
             }
         }
@@ -800,7 +1100,7 @@ async fn configure(
             std::fs::create_dir_all(parent)?;
         }
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let temp = path.with_extension("tmp");
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -808,6 +1108,9 @@ async fn configure(
             .write(true)
             .mode(0o600)
             .open(&temp)?;
+        // `mode` only applies when the temporary file is created; a stale
+        // temp file from an interrupted save must not widen permissions.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         file.write_all(toml::to_string_pretty(&value)?.as_bytes())?;
         file.sync_all()?;
         std::fs::rename(temp, path)?;
@@ -815,22 +1118,28 @@ async fn configure(
     })
     .await??;
     let mut a = app.lock().await;
-    let active = a.config.active_provider.clone();
-    let p = a
-        .config
-        .provider
-        .get_mut(&active)
-        .context("active provider missing")?;
-    p.base_url = base_url;
-    p.model = model;
-    p.api_key_env = api_key_env;
-    if let Some(value) = vision {
-        p.vision = value;
+    {
+        let entry = a
+            .config
+            .provider
+            .entry(update.name.clone())
+            .or_insert_with(buddy_ai::ProviderConfig::default);
+        entry.kind = update.kind;
+        entry.base_url = update.base_url;
+        entry.model = update.model;
+        entry.api_key_env = update.api_key_env;
+        if let Some(key) = update.api_key {
+            entry.api_key = Some(key);
+        }
+        if let Some(value) = update.vision {
+            entry.vision = value;
+        }
     }
-    if let Some(value) = capture_content {
+    a.config.active_provider = update.name;
+    if let Some(value) = update.capture_content {
         a.config.capture.enabled = value;
     }
-    if let Some(value) = screenshots {
+    if let Some(value) = update.screenshots {
         a.config.capture.screenshots = value;
     }
     a.snapshot.connection = connection(&a.config);
@@ -839,6 +1148,33 @@ async fn configure(
     drop(guard);
     persist(app).await?;
     Ok(json!({"type":"ok","configured":true}))
+}
+
+async fn available_models(app: &Shared, typed_key: Option<String>) -> Result<Value> {
+    let (stored, stored_env) = {
+        let a = app.lock().await;
+        let active = &a.config.provider[&a.config.active_provider];
+        match opencode_provider(&a.config, active) {
+            Some(provider) => (provider.api_key.clone(), provider.api_key_env.clone()),
+            None => (None, buddy_ai::OPENCODE_GO_API_KEY_ENV.to_string()),
+        }
+    };
+    let api_key = match typed_key.map(|key| key.trim().to_string()) {
+        Some(key) if !key.is_empty() => Some(validate_api_key(&key)?),
+        _ => stored.filter(|key| !key.trim().is_empty()),
+    };
+    let provider = buddy_ai::ProviderConfig {
+        kind: buddy_ai::ProviderKind::OpencodeGo,
+        base_url: buddy_ai::OPENCODE_GO_BASE_URL.to_string(),
+        api_key_env: stored_env,
+        api_key: api_key.clone(),
+        ..buddy_ai::ProviderConfig::default()
+    };
+    if api_key.is_none() && !key_available(&provider) {
+        bail!("Enter an Opencode Go API key to load models");
+    }
+    let models = buddy_ai::list_models(&provider).await?;
+    Ok(json!({"type":"models","models":models}))
 }
 
 async fn send(app: &Shared, id: String, text: String) -> Result<Value> {
@@ -907,7 +1243,10 @@ async fn send(app: &Shared, id: String, text: String) -> Result<Value> {
             };
             if cancel.is_cancelled() {return Ok(());}
             let project_dir = workspace::select(configuration.project_dir.as_deref(), project_dir, &mut context).await;
-            let active_provider = configuration.provider[&configuration.active_provider].clone();
+            let active_provider = provider_for_run(
+                &configuration.provider[&configuration.active_provider],
+                &blob_id,
+            );
             if !headless && configuration.capture.enabled && context["kind"]=="window" {
                 // Let the renderer hide Drops' own overlay before any pixel read.
                 tokio::select!{_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(std::time::Duration::from_millis(100))=>{}}
@@ -1169,5 +1508,268 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("too large"));
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn test_config() -> Config {
+        Config {
+            appearance: Value::Null,
+            capture: buddy_anchor::capture::CaptureConfig::default(),
+            provider: HashMap::from([(
+                LOCAL_PROVIDER.to_string(),
+                buddy_ai::ProviderConfig {
+                    base_url: "http://localhost:11434/v1".into(),
+                    model: "qwen".into(),
+                    ..buddy_ai::ProviderConfig::default()
+                },
+            )]),
+            active_provider: LOCAL_PROVIDER.into(),
+            project_dir: None,
+            instructions: String::new(),
+            external_tools: vec![],
+            anchor_rules: vec![],
+        }
+    }
+
+    #[test]
+    fn connection_never_serializes_the_stored_key() {
+        let mut config = test_config();
+        config.provider.insert(
+            OPENCODE_GO_PROVIDER.into(),
+            buddy_ai::ProviderConfig {
+                kind: buddy_ai::ProviderKind::OpencodeGo,
+                base_url: buddy_ai::OPENCODE_GO_BASE_URL.into(),
+                model: "kimi-k3".into(),
+                api_key: Some("super-secret-key".into()),
+                ..buddy_ai::ProviderConfig::default()
+            },
+        );
+        config.active_provider = OPENCODE_GO_PROVIDER.into();
+        let connection = connection(&config);
+        let text = connection.to_string();
+        assert!(!text.contains("super-secret-key"));
+        assert_eq!(connection["mode"], "opencode_go");
+        assert_eq!(connection["has_api_key"], true);
+        assert_eq!(connection["custom"]["model"], "qwen");
+        assert_eq!(connection["opencode_go"]["model"], "kimi-k3");
+    }
+
+    #[test]
+    fn switching_to_opencode_go_keeps_the_custom_provider() {
+        let config = test_config();
+        let update = prepare_update(
+            &config,
+            Some("opencode_go".into()),
+            Some("http://ignored.test/v1".into()),
+            Some("kimi-k3".into()),
+            None,
+            Some("secret-key".into()),
+            Some(false),
+            None,
+            None,
+        )
+        .expect("update");
+        assert_eq!(update.name, OPENCODE_GO_PROVIDER);
+        assert_eq!(update.kind, buddy_ai::ProviderKind::OpencodeGo);
+        assert_eq!(update.base_url, buddy_ai::OPENCODE_GO_BASE_URL);
+        assert_eq!(update.api_key.as_deref(), Some("secret-key"));
+        assert_eq!(config.provider[LOCAL_PROVIDER].model, "qwen");
+    }
+
+    #[test]
+    fn switching_back_to_custom_reuses_saved_endpoint() {
+        let mut config = test_config();
+        config.provider.insert(
+            OPENCODE_GO_PROVIDER.into(),
+            buddy_ai::ProviderConfig {
+                kind: buddy_ai::ProviderKind::OpencodeGo,
+                base_url: buddy_ai::OPENCODE_GO_BASE_URL.into(),
+                model: "kimi-k3".into(),
+                api_key: Some("secret-key".into()),
+                ..buddy_ai::ProviderConfig::default()
+            },
+        );
+        config.active_provider = OPENCODE_GO_PROVIDER.into();
+        let update = prepare_update(
+            &config,
+            Some("custom".into()),
+            None,
+            None,
+            Some(String::new()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("update");
+        assert_eq!(update.name, LOCAL_PROVIDER);
+        assert_eq!(update.base_url, "http://localhost:11434/v1");
+        assert_eq!(update.model, "qwen");
+        assert!(update.api_key.is_none());
+    }
+
+    #[test]
+    fn opencode_go_requires_a_key_and_keeps_an_existing_one() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var(buddy_ai::OPENCODE_GO_API_KEY_ENV);
+        let config = test_config();
+        let error = prepare_update(
+            &config,
+            Some("opencode_go".into()),
+            None,
+            Some("kimi-k3".into()),
+            None,
+            Some("   ".into()),
+            None,
+            None,
+            None,
+        )
+        .expect_err("missing key");
+        assert!(error.to_string().contains("API key"));
+
+        let mut saved = config;
+        saved.provider.insert(
+            OPENCODE_GO_PROVIDER.into(),
+            buddy_ai::ProviderConfig {
+                kind: buddy_ai::ProviderKind::OpencodeGo,
+                base_url: buddy_ai::OPENCODE_GO_BASE_URL.into(),
+                model: "glm-5.2".into(),
+                api_key: Some("stored-key".into()),
+                ..buddy_ai::ProviderConfig::default()
+            },
+        );
+        let update = prepare_update(
+            &saved,
+            Some("opencode_go".into()),
+            None,
+            Some("glm-5.3".into()),
+            None,
+            Some(String::new()),
+            None,
+            None,
+            None,
+        )
+        .expect("keeps key");
+        assert_eq!(update.api_key.as_deref(), Some("stored-key"));
+        assert_eq!(update.model, "glm-5.3");
+    }
+
+    #[test]
+    fn opencode_go_can_use_the_environment_key_without_persisting_it() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var(buddy_ai::OPENCODE_GO_API_KEY_ENV, "env-secret-key");
+        let config = test_config();
+        let update = prepare_update(
+            &config,
+            Some("opencode_go".into()),
+            None,
+            Some("kimi-k3".into()),
+            None,
+            Some(String::new()),
+            None,
+            None,
+            None,
+        )
+        .expect("environment key");
+        assert!(update.api_key.is_none(), "env key must not be stored");
+        assert_eq!(update.api_key_env, buddy_ai::OPENCODE_GO_API_KEY_ENV);
+        std::env::remove_var(buddy_ai::OPENCODE_GO_API_KEY_ENV);
+    }
+
+    #[test]
+    fn switching_modes_keeps_a_custom_provider_with_another_name() {
+        let mut config = test_config();
+        let ollama = config.provider.remove(LOCAL_PROVIDER).expect("local");
+        config.provider.insert("ollama".into(), ollama);
+        config.active_provider = "ollama".into();
+
+        let to_go = prepare_update(
+            &config,
+            Some("opencode_go".into()),
+            None,
+            Some("kimi-k3".into()),
+            None,
+            Some("secret-key".into()),
+            None,
+            None,
+            None,
+        )
+        .expect("go update");
+        assert_eq!(to_go.name, OPENCODE_GO_PROVIDER);
+
+        config.provider.insert(
+            OPENCODE_GO_PROVIDER.into(),
+            buddy_ai::ProviderConfig {
+                kind: buddy_ai::ProviderKind::OpencodeGo,
+                base_url: buddy_ai::OPENCODE_GO_BASE_URL.into(),
+                model: "kimi-k3".into(),
+                api_key: Some("secret-key".into()),
+                ..buddy_ai::ProviderConfig::default()
+            },
+        );
+        config.active_provider = OPENCODE_GO_PROVIDER.into();
+        let back = prepare_update(
+            &config,
+            Some("custom".into()),
+            None,
+            None,
+            Some(String::new()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("custom update");
+        assert_eq!(back.name, "ollama");
+        assert_eq!(back.model, "qwen");
+        assert_eq!(connection(&config)["custom"]["model"], "qwen");
+    }
+
+    #[test]
+    fn run_provider_gets_a_session_only_for_opencode_go() {
+        let custom = test_config().provider[LOCAL_PROVIDER].clone();
+        assert!(provider_for_run(&custom, "drop-1").session_id.is_none());
+
+        let go = buddy_ai::ProviderConfig {
+            kind: buddy_ai::ProviderKind::OpencodeGo,
+            model: "kimi-k3".into(),
+            ..buddy_ai::ProviderConfig::default()
+        };
+        let run = provider_for_run(&go, "drop-1");
+        assert_eq!(run.session_id.as_deref(), Some("drop-1"));
+        assert!(go.session_id.is_none(), "the saved config is unchanged");
+    }
+
+    #[test]
+    fn configure_validation_rejects_unknown_modes_and_unsafe_keys() {
+        let config = test_config();
+        let error = prepare_update(
+            &config,
+            Some("cloud".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("unknown mode");
+        assert!(error.to_string().contains("Unknown connection mode"));
+
+        let error = prepare_update(
+            &config,
+            Some("opencode_go".into()),
+            None,
+            Some("kimi-k3".into()),
+            None,
+            Some("bad\nkey".into()),
+            None,
+            None,
+            None,
+        )
+        .expect_err("newline in key");
+        assert!(!error.to_string().contains("bad\nkey"));
     }
 }
