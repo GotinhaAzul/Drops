@@ -10,6 +10,9 @@ pub enum Command {
     Watch,
     Pointer,
     Toggle,
+    Lively {
+        enabled: bool,
+    },
     Configure {
         base_url: String,
         model: String,
@@ -83,6 +86,9 @@ pub enum DropAppearance {
     Drop,
     Cat,
     Sprout,
+    Bunny,
+    Robot,
+    Cloud,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +107,9 @@ pub struct Blob {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Opt-in expressive motion and status cues, persisted with app state.
+    #[serde(default)]
+    pub lively: bool,
     #[serde(default)]
     pub connection: Value,
     #[serde(default)]

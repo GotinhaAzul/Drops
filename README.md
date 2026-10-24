@@ -13,7 +13,8 @@ Requires Linux, a Rust toolchain, Hyprland, and Quickshell with Qt Quick Control
 This installs Drops under `~/.local` and enables a small native widget in the Omarchy top bar. Click the drop icon to open its compact panel. The panel stays closed on startup.
 
 - **+** creates a drop (maximum three); **−** deletes the selected drop and conversation, stopping any running turn first.
-- Choose **Drop**, **Cat**, or **Sprout** to change that drop’s appearance.
+- Choose **Drop**, **Cat**, **Sprout**, **Bunny**, **Robot**, or **Cloud** to change that drop’s appearance.
+- **Lively Drops** in the panel enables gentle swaying, a little hop when a reply arrives, expressive faces and extra status badges: **≡** reading, **■** stopping, **×** error, and **✓** unread reply. Thinking keeps its animated dots; approval keeps its **!** cue. Turn it off for the quieter appearance. It starts off and is saved across restarts; avatar choices are always available.
 - Drag the avatar onto a window or empty workspace. A floating avatar follows the pointer with pickup and settle animations, and the panel closes after placement.
 - A window drop is deleted when its attached window closes. A workspace drop stays until you delete it.
 - **⚙ Model connection** lets you paste the endpoint URL, enter the model name and save. For authentication, enter the name of an existing API-key environment variable; the key itself is never stored in TOML. A missing config is supported for first-run setup.
@@ -33,6 +34,7 @@ buddyctl status
 buddyctl toggle
 buddyctl create --appearance cat
 buddyctl style BLOB_ID sprout
+buddyctl lively on              # off restores quiet mode
 buddyctl configure http://localhost:11434/v1 MODEL_NAME
 buddyctl drop 300 200
 buddyctl send BLOB_ID 'What is open here?'
@@ -100,7 +102,9 @@ python3 tests/office-array-formulas.py
 uv run --with python-docx --with openpyxl python tests/office-compat.py
 python3 tests/widget-smoke.py
 python3 tests/qml-interactions.py
+python3 tests/lively-smoke.py
 python3 tests/qml-bubble.py
+DROPS_TEST_LIVELY=1 python3 tests/qml-bubble.py
 python3 tests/qml-bubble-position.py
 python3 tests/failure-smoke.py
 python3 tests/window-content-smoke.py

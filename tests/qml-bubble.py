@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix="drops-qml-bubble-") as directory:
         "placement":{"anchor":{"kind":"panel"},"x":0,"y":0,"visible":False,"label":"Ready to place"},
         "context":None,"history":[],"approval":None,
     }
-    initial=json.dumps({"panel_open":False,"connection":{"base_url":"http://127.0.0.1:11434/v1","model":"test","api_key_env":""},"blobs":[fixture,draft]})
+    initial=json.dumps({"lively":os.environ.get("DROPS_TEST_LIVELY")=="1","panel_open":False,"connection":{"base_url":"http://127.0.0.1:11434/v1","model":"test","api_key_env":""},"blobs":[fixture,draft]})
     bridge.write_text(f'''#!{sys.executable}
 import json,sys,pathlib,time
 state=json.loads({initial!r})
@@ -120,12 +120,16 @@ for line in sys.stdin:
                 if(!root.testDrop || !root.testBubble || !fixture)return
                 if(!root.sawCapturing && fixture.state==="capturing"){
                     root.sawCapturing=true
+                    const cue=root.findNamed(root.testDrop.contentItem,"lively-cue-fixture")
+                    if(!cue || cue.visible!==root.lively || cue.cue!=="≡"){console.log("TEST_FAILURE reading cue");Qt.quit();return}
                     console.log("TEST_CAPTURING", root.chatOpen, root.testDrop.visible, root.chatViews["fixture"]===undefined)
                 }
                 if(root.chatOpen || !root.sawCapturing || !root.testBubble.previewMode)return
                 const preview=root.findNamed(root.testBubble.contentItem,"response-preview-text-fixture")
                 if(!preview)return
                 console.log("TEST_PREVIEW", root.testBubble.visible, root.testBubble.previewMode, preview.text, preview.lineCount, preview.maximumLineCount, preview.truncated, root.testBubble.implicitHeight)
+                const readyCue=root.findNamed(root.testDrop.contentItem,"lively-cue-fixture")
+                if(!readyCue || readyCue.visible!==root.lively || readyCue.cue!=="✓"){console.log("TEST_FAILURE reply cue");Qt.quit();return}
                 console.log("TEST_PREVIEW_AWAKE", root.testDrop.awake)
                 const openArea=root.findNamed(root.testBubble.contentItem,"response-preview-open-fixture")
                 if(!openArea){console.log("TEST_FAILURE preview has no click target");Qt.quit();return}
@@ -181,7 +185,19 @@ for line in sys.stdin:
                 root.closeChat();root.testPhase++;break
             case 12:
                 if(root.chatOpen)return
+                const state=JSON.parse(JSON.stringify(root.state))
+                state.blobs[0].placement.visible=true;state.blobs[0].state="error"
+                root.state=state;root.testPhase++;break
+            case 13: {
+                const cue=root.findNamed(root.testDrop.contentItem,"lively-cue-fixture")
+                if(!cue || cue.cue!=="×" || cue.visible!==root.lively){console.log("TEST_FAILURE error cue");Qt.quit();return}
+                const state=JSON.parse(JSON.stringify(root.state));state.blobs[0].state="stopping";root.state=state;root.testPhase++;break
+            }
+            case 14: {
+                const cue=root.findNamed(root.testDrop.contentItem,"lively-cue-fixture")
+                if(!cue || cue.cue!=="■" || cue.visible!==root.lively){console.log("TEST_FAILURE stopping cue");Qt.quit();return}
                 console.log("TEST_BUBBLE_DONE");Qt.quit();break
+            }
             }
         }
     }
@@ -244,4 +260,4 @@ for line in sys.stdin:
     assert [c["text"] for c in sends]==["How's my CPU right now?","Explain that simply.","please fail"],commands
     assert [c["id"] for c in sends]==["fixture","fixture","draft"],commands
     assert any(c["type"]=="drop" and c["id"]=="draft" and c["use_cursor"] for c in commands),commands
-    print("PASS: placed drops keep their avatar during capture, collapse on send, show a truncated reply preview above the drop, reopen the full conversation on click, and keep send errors visible")
+    print("PASS: placed drops keep their avatar during capture, collapse on send, show a truncated reply preview above the drop, reopen the full conversation on click, and keep send errors visible; reading/reply/error/stopping cues obey lively mode")
