@@ -29,6 +29,8 @@ ShellRoot {
     property string autoChatId: ""
     property bool autoChatPending: false
     property var chatViews: ({})
+    property var seenResponses: ({})
+    property bool responseHistoryInitialized: false
     function loadSettings() {
         const c=state.connection || ({})
         endpoint.text=c.base_url || "http://127.0.0.1:11434/v1"
@@ -176,15 +178,54 @@ ShellRoot {
         if (blob.state==="error") return "hit a snag"
         return ""
     }
+    // The last finished answer, but only when it follows the latest user turn.
+    // Thinking/tool events between the answer and now are ignored.
+    function latestResponse(blob) {
+        if (!blob || !blob.history) return null
+        const history=blob.history
+        for (let i=history.length-1;i>=0;i--) {
+            const entry=history[i]
+            if (!entry) continue
+            if (entry.type==="user") return null
+            if (entry.type==="text" || entry.type==="error") {
+                return String(entry.text || "").trim().length>0 ? entry : null
+            }
+        }
+        return null
+    }
+    // A compact reply is offered only for a placed, visible, idle drop whose
+    // latest answer has not been read in the full chat yet.
+    function responsePreviewFor(blob) {
+        if (!blob || !blob.placement || !blob.placement.visible || blob.placement.anchor.kind==="panel") return null
+        if (["capturing","thinking","waiting","stopping"].includes(blob.state)) return null
+        const entry=root.latestResponse(blob)
+        const seen=root.seenResponses[blob.id]
+        // The text guard keeps a cleared session from suppressing an answer
+        // that happens to restore the same history length.
+        if (seen && seen.length===blob.history.length && seen.text===(entry ? String(entry.text || "") : "")) return null
+        return entry
+    }
+    function markResponseSeen(blob) {
+        if (!blob) return
+        const entry=root.latestResponse(blob)
+        const next=Object.assign({},root.seenResponses)
+        next[blob.id]={length:blob.history.length,text:entry ? String(entry.text || "") : ""}
+        root.seenResponses=next
+    }
+    function previewTextFor(blob) {
+        const entry=root.responsePreviewFor(blob)
+        return entry ? String(entry.text || "").trim().slice(0,600) : ""
+    }
     function openChat(id, focus) {
         if (!id) return
         const blob=state.blobs.find(b=>b.id===id)
         if (!blob || !blob.placement || blob.placement.anchor.kind==="panel") return
         selectedId=id;chatOpen=true;failure=""
+        root.markResponseSeen(blob)
         if (state.panel_open) send({type:"toggle"})
         if (focus!==false) focusTimer.restart()
     }
-    function closeChat() { chatOpen=false }
+    function closeChat() { root.markResponseSeen(selected); chatOpen=false }
     function toggleChat(id) {
         if (chatOpen && selectedId===id) closeChat()
         else openChat(id,true)
@@ -230,6 +271,17 @@ ShellRoot {
                         const ids=msg.state.blobs.map(b=>b.id)
                         if (JSON.stringify(ids)!==JSON.stringify(root.blobIds)) root.blobIds=ids
                         root.state=msg.state
+                        // Restored history is not a new reply; do not pop a
+                        // preview above every drop when the UI reconnects.
+                        if (!root.responseHistoryInitialized) {
+                            root.responseHistoryInitialized=true
+                            const seen={}
+                            for (const b of msg.state.blobs) {
+                                const entry=root.latestResponse(b)
+                                seen[b.id]={length:b.history.length,text:entry ? String(entry.text || "") : ""}
+                            }
+                            root.seenResponses=seen
+                        }
                         if (!ids.includes(root.selectedId)) {root.selectedId=ids[0] || "";root.chatOpen=false}
                         else if (root.chatOpen) {
                             const openBlob=msg.state.blobs.find(b=>b.id===root.selectedId)
@@ -378,17 +430,20 @@ ShellRoot {
     }
 
     // The conversation lives with the drop: a compact speech bubble that grows
-    // above it, switches to a chat log once the first message is sent, and
+    // above it, collapses to a truncated reply preview after sending, and
     // disappears when the anchor does.
     component ChatBubble: PanelWindow {
         id:bubble
-        objectName:bubble.blob ? "chat-bubble-"+bubble.blob.id : "chat-bubble"
+        objectName:bubble.blob ? (bubble.previewMode ? "response-preview-" : "chat-bubble-")+bubble.blob.id : (bubble.previewMode ? "response-preview" : "chat-bubble")
         required property var blob
         required property var monitor
         required property var place
         required property bool hostVisible
         property bool open: !!blob && root.chatOpen && root.selectedId===blob.id
         property bool active: open && hostVisible
+        property var previewEntry: root.responsePreviewFor(blob)
+        property bool previewMode: !open && hostVisible && !root.dragging && !root.capturing && !!previewEntry
+        property bool collapseWhenBusy: false
         property var registeredView: null
         property bool busy: !!blob && ["capturing","thinking","waiting","stopping"].includes(blob.state)
         property bool waiting: !!blob && blob.state==="waiting" && !!blob.approval
@@ -409,6 +464,9 @@ ShellRoot {
             const value=chatInput.text
             if(!value.trim())return
             chatInput.text=""
+            // Collapse only once the daemon reports the turn as busy. A
+            // rejected send keeps this window open so its error stays visible.
+            bubble.collapseWhenBusy=true
             root.submitChat(bubble.blob.id,value)
         }
         function viewHandle() {
@@ -426,7 +484,7 @@ ShellRoot {
         }
         function sendSuggestion(index) {
             const items=root.suggestionsFor(blob)
-            if(items[index])root.submitChat(blob.id,items[index].prompt)
+            if(items[index]){bubble.collapseWhenBusy=true;root.submitChat(blob.id,items[index].prompt)}
         }
         function activate() {
             if(!bubble.blob)return
@@ -439,20 +497,21 @@ ShellRoot {
         }
         function deactivate() {
             intro=false
+            bubble.collapseWhenBusy=false
             const view=bubble.registeredView
             bubble.registeredView=null
             if(view&&bubble.blob)root.unregisterChat(bubble.blob.id,view)
         }
         screen: monitor
-        visible: bubble.active && !root.capturing
+        visible: (bubble.active && !root.capturing) || bubble.previewMode
         anchors {top:true;left:true}
         margins {top:Math.max(0,bubble.top-monitor.y);left:Math.max(0,bubble.left-monitor.x)}
-        implicitWidth: 312
-        implicitHeight: bubbleBody.height+bubble.tailSize
+        implicitWidth: bubble.open ? 312 : 236
+        implicitHeight: (bubble.open ? bubbleBody.height : previewBody.height)+bubble.tailSize
         color:"transparent"; exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-chat"
-        WlrLayershell.keyboardFocus: bubble.visible ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
-        Shortcut {sequence:"Escape";enabled:bubble.visible;onActivated:root.closeChat()}
+        WlrLayershell.keyboardFocus: bubble.active ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+        Shortcut {sequence:"Escape";enabled:bubble.active;onActivated:root.closeChat()}
         Timer {
             interval:300;repeat:true;running:bubble.visible && bubble.busy
             onTriggered:bubble.dotPhase=(bubble.dotPhase+1)%3
@@ -463,11 +522,21 @@ ShellRoot {
         }
         Component.onCompleted: if(active && !bubble.registeredView)activate()
         Component.onDestruction: deactivate()
+        onBusyChanged: {
+            if(busy && bubble.collapseWhenBusy){
+                bubble.collapseWhenBusy=false
+                if(bubble.open)root.closeChat()
+            }
+        }
+        // A rejected send never becomes busy; stop waiting and keep the
+        // failure text visible in the open bubble.
+        Timer {id:collapseGuard;interval:1500;running:bubble.collapseWhenBusy;onTriggered:bubble.collapseWhenBusy=false}
         Timer {id:introTimer;interval:16;onTriggered:bubble.intro=true}
         Timer {id:scrollToEnd;interval:30;onTriggered:{if(chatLog.contentItem)chatLog.contentItem.contentY=Math.max(0,chatLog.contentHeight-chatLog.height)}}
 
         Item {
             id:bubbleBody
+            visible:bubble.open
             width:parent.width
             height:body.implicitHeight+24
             y:bubble.above ? 0 : bubble.tailSize
@@ -717,6 +786,67 @@ ShellRoot {
                 }
             }
         }
+        // The closed conversation collapses to a short preview above the drop.
+        // Clicking it opens the full bubble; the drop itself remains clickable.
+        Item {
+            id:previewBody
+            visible:bubble.previewMode
+            width:parent.width
+            height:previewColumn.implicitHeight+20
+            y:bubble.above ? 0 : bubble.tailSize
+            opacity:bubble.previewMode ? 1 : 0
+            Behavior on opacity {NumberAnimation{duration:140;easing.type:Easing.OutCubic}}
+            Rectangle {
+                anchors.fill:previewBg;anchors.margins:-2;radius:17
+                color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.10)
+            }
+            Rectangle {
+                id:previewBg
+                anchors.fill:parent;radius:14
+                color:Qt.lighter(root.background,1.08)
+                border.color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.30);border.width:1
+            }
+            Item {
+                width:18;height:bubble.tailSize
+                x:bubble.tailX-width/2
+                y:bubble.above ? previewBody.height : -bubble.tailSize
+                clip:true
+                Rectangle {
+                    width:14;height:14;rotation:45;radius:2
+                    x:2;y:bubble.above ? -7 : 2
+                    color:Qt.lighter(root.background,1.08)
+                    border.color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.30);border.width:1
+                }
+            }
+            Column {
+                id:previewColumn
+                x:12;y:10;width:parent.width-24;spacing:3
+                Text {
+                    id:previewText
+                    objectName:bubble.blob ? "response-preview-text-"+bubble.blob.id : "response-preview-text"
+                    width:parent.width
+                    text:root.previewTextFor(bubble.blob)
+                    color:bubble.previewEntry && bubble.previewEntry.type==="error" ? "#f4a99a" : root.ink
+                    font.pixelSize:12;lineHeight:1.15
+                    wrapMode:Text.WrapAtWordBoundaryOrAnywhere
+                    maximumLineCount:3;elide:Text.ElideRight
+                    textFormat:Text.PlainText
+                }
+                Text {
+                    visible:previewText.lineCount>=previewText.maximumLineCount
+                    width:parent.width;horizontalAlignment:Text.AlignRight
+                    text:"Click to open";color:root.muted;font.pixelSize:9
+                }
+            }
+            MouseArea {
+                id:previewOpen
+                objectName:bubble.blob ? "response-preview-open-"+bubble.blob.id : "response-preview-open"
+                anchors.fill:parent;cursorShape:Qt.PointingHandCursor
+                onClicked:root.openChat(bubble.blob.id,true)
+            }
+            Accessible.role:Accessible.Button
+            Accessible.name:"Open the conversation"
+        }
     }
 
     PanelWindow {
@@ -882,18 +1012,24 @@ ShellRoot {
                 model:root.blobIds
                 delegate:PanelWindow {
                     id:placed
+                    objectName:"drop-"+modelData
                     required property string modelData
                     property var blob:root.state.blobs.find(b=>b.id===modelData) || null
                     property var pos:blob ? blob.placement : ({x:0,y:0,visible:false})
                     property bool hovered:dropArea.containsMouse && !root.dragging
-                    property bool awake:!!blob && (blob.state!=="idle" || root.recentDropId===modelData || (root.selectedId===modelData && root.chatOpen) || hovered)
+                    property bool replying:!!blob && !!root.responsePreviewFor(blob)
+                    property bool awake:!!blob && (blob.state!=="idle" || replying || root.recentDropId===modelData || (root.selectedId===modelData && root.chatOpen) || hovered)
                     property bool waiting:!!blob && blob.state==="waiting"
                     property bool working:!!blob && ["capturing","thinking","stopping"].includes(blob.state)
                     property bool onMonitor:!!blob && pos.visible && pos.x>=monitorScope.monitor.x && pos.x<monitorScope.monitor.x+monitorScope.monitor.width && pos.y>=monitorScope.monitor.y && pos.y<monitorScope.monitor.y+monitorScope.monitor.height
                     property int badgePhase:0
                     Timer {interval:280;repeat:true;running:placed.working && !root.chatOpen;onTriggered:placed.badgePhase=(placed.badgePhase+1)%3}
                     screen:monitorScope.monitor
-                    visible:!root.capturing && placed.onMonitor
+                    // Keep the avatar visible while its window is being read.
+                    // Hiding every drop during capture looked like the drop
+                    // vanished on send; the chat surface still hides so a
+                    // screenshot does not contain an open conversation.
+                    visible:placed.onMonitor
                     anchors {top:true;left:true}
                     margins {top:Math.max(0,pos.y-monitorScope.monitor.y-8);left:Math.max(0,pos.x-monitorScope.monitor.x-8)}
                     implicitWidth:72;implicitHeight:72;color:"transparent";exclusionMode:ExclusionMode.Ignore
