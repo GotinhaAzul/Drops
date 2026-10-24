@@ -25,6 +25,7 @@ for line in sys.stdin:
  kind=cmd["type"]
  if kind=="create":
   state["blobs"].append({{"id":"test","appearance":cmd["appearance"],"state":"idle","placement":{{"anchor":{{"kind":"panel"}},"x":10,"y":10,"visible":False,"label":"Ready to place"}},"history":[],"context":None,"approval":None}});publish();emit({{"type":"ok","id":"test"}})
+ elif kind=="lively":state["lively"]=cmd["enabled"];publish()
  elif kind=="style":state["blobs"][0]["appearance"]=cmd["appearance"];publish()
  elif kind=="sudo":state["sudo"]=cmd["enabled"];publish()
  elif kind=="pointer":emit({{"type":"pointer","cursor":None}})
@@ -39,6 +40,7 @@ for line in sys.stdin:
     source=re.sub(r"^\s*margins \{.*\}\n","\n",source,flags=re.M)
     source=re.sub(r"^\s*WlrLayershell\..*\n","\n",source,flags=re.M)
     source=re.sub(r"exclusionMode:\s*ExclusionMode.Ignore;?","",source)
+    source=source.replace("look:root.currentDrop ?", "id:testPanelFace;look:root.currentDrop ?",1)
     source=source.replace("id:dragGhost","id:dragGhost; Component.onCompleted:root.testGhost=this")
     harness='''
     property var testGhost:null
@@ -53,10 +55,22 @@ for line in sys.stdin:
             if(++ticks>100){console.log("TEST_FAILURE timed out phase "+root.testPhase);Qt.quit();return}
             if(!root.connected)return
             switch(root.testPhase){
+            case 10:
+                if(!root.lively)return
+                if(Math.abs(testPanelFace.rotation)<0.01)return
+                livelyToggle.checked=false;livelyToggle.toggled();root.testPhase=11;break
+            case 11:
+                if(root.lively)return
+                if(testPanelFace.rotation!==0){console.log("TEST_FAILURE motion continued in quiet mode");Qt.quit();return}
+                root.testPhase=3;break
+            case 12:if(root.currentDrop.appearance!=="bunny")return;lookSelector.activated(4);root.testPhase=13;break
+            case 13:if(root.currentDrop.appearance!=="robot")return;lookSelector.activated(5);root.testPhase=14;break
+            case 14:if(root.currentDrop.appearance!=="cloud")return;lookSelector.activated(1);root.testPhase=15;break
+            case 15:if(root.currentDrop.appearance!=="cat")return;livelyToggle.checked=true;livelyToggle.toggled();root.testPhase=10;break
             case 0:root.pendingLook="drop";newDropButton.clicked();root.testPhase++;break
             case 1:if(!root.currentDrop)return;lookSelector.activated(1);root.testPhase++;break
             case 2:if(root.currentDrop.appearance!=="cat" || !root.testGhost)return;
-                root.dragLook="cat";root.cursorReady=true;root.skipMotion=true;root.cursor=({x:100,y:100});root.dragging=true;root.testPhase++;break
+                root.dragLook="cat";root.cursorReady=true;root.skipMotion=true;root.cursor=({x:100,y:100});root.dragging=true;lookSelector.activated(3);root.testPhase=12;break
             case 3:root.skipMotion=false;root.cursor=({x:500,y:400});sample.start();root.testPhase++;break
             case 4:if(!root.animationSampled || Math.abs(root.testGhost.x-478)>1)return;
                 root.drop(root.currentDrop.id);root.testPhase++;break
@@ -81,5 +95,8 @@ for line in sys.stdin:
     assert any(c["type"]=="drop" and c["use_cursor"] for c in commands)
     assert any(c["type"]=="configure" and c["base_url"]=="http://127.0.0.1:1234/v1" and c["model"]=="demo" for c in commands)
     assert any(c["type"]=="remove" for c in commands)
+    assert [c["enabled"] for c in commands if c["type"]=="lively"]==[True,False]
     assert [c["enabled"] for c in commands if c["type"]=="sudo"]==[True,False]
-    print("PASS: real QML create/style/delete controls, endpoint form, sudo toggle, panel close on drop, interpolated pointer-following animation")
+    for look in ["bunny","robot","cloud"]:
+        assert any(c["type"]=="style" and c["appearance"]==look for c in commands)
+    print("PASS: real QML create/style/delete controls, endpoint form, sudo toggle, lively motion start/stop, panel close on drop, interpolated pointer-following animation, all new styles")

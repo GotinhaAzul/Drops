@@ -14,7 +14,7 @@ ShellRoot {
     property string selectedId: ""
     property var selected: state.blobs.find(b => b.id === selectedId) || null
     property var currentDrop: selected
-    property var looks: ["drop","cat","sprout"]
+    property var looks: ["drop","cat","sprout","bunny","robot","cloud"]
     property string pendingLook: "drop"
     property bool settingsOpen: false
     property bool settingsInitialized: false
@@ -31,14 +31,53 @@ ShellRoot {
     property var chatViews: ({})
     property var seenResponses: ({})
     property bool responseHistoryInitialized: false
+    property string connectionMode: "custom"
+    property var opencodeModels: []
+    property string opencodeSelected: ""
+    property bool loadingModels: false
     function loadSettings() {
         const c=state.connection || ({})
-        endpoint.text=c.base_url || "http://127.0.0.1:11434/v1"
-        modelName.text=c.model || ""
-        keyEnv.text=c.api_key_env || ""
-        visionMode.checked=!!c.vision
+        const custom=c.custom || c
+        const go=c.opencode_go || ({})
+        endpoint.text=custom.base_url || "http://127.0.0.1:11434/v1"
+        modelName.text=custom.model || ""
+        keyEnv.text=custom.api_key_env || ""
+        opencodeSelected=go.model || ""
+        opencodeModels=opencodeSelected ? [opencodeSelected] : []
+        opencodeKey.text=""
+        opencodeKey.placeholderText=go.has_api_key ? "Key available — leave blank to keep" : "Paste your Opencode Go API key"
+        connectionMode=c.mode==="opencode_go" ? "opencode_go" : "custom"
+        visionMode.checked=!!(connectionMode==="opencode_go" ? go.vision : custom.vision)
         contentCapture.checked=c.capture_content!==false
         screenCapture.checked=c.screenshots!==false
+        loadingModels=false
+    }
+    function selectConnectionMode(index) {
+        const mode=index===1 ? "opencode_go" : "custom"
+        if (mode===connectionMode) return
+        connectionMode=mode
+        const c=state.connection || ({})
+        const saved=mode==="opencode_go" ? (c.opencode_go || ({})) : (c.custom || ({}))
+        visionMode.checked=!!saved.vision
+    }
+    function opencodeHasKey() {
+        const go=state.connection && state.connection.opencode_go || ({})
+        return opencodeKey.text.trim().length>0 || !!go.has_api_key
+    }
+    function loadModels() {
+        if (!connected) {failure="Drops is reconnecting…";return}
+        failure="";loadingModels=true
+        send({type:"models",api_key:opencodeKey.text})
+    }
+    function saveConnection() {
+        const vision=visionMode.checked
+        const capture_content=contentCapture.checked
+        const screenshots=screenCapture.checked
+        if (connectionMode==="opencode_go") {
+            send({type:"configure",mode:"opencode_go",model:opencodeSelected,api_key:opencodeKey.text,vision:vision,capture_content:capture_content,screenshots:screenshots})
+        } else {
+            send({type:"configure",mode:"custom",base_url:endpoint.text,model:modelName.text,api_key_env:keyEnv.text,vision:vision,capture_content:capture_content,screenshots:screenshots})
+        }
     }
     property bool chatOpen: false
     readonly property bool sudo: state.sudo === true
@@ -58,6 +97,7 @@ ShellRoot {
         loadSettings();settingsOpen=true;failure=""
         if(!state.panel_open)send({type:"toggle"})
     }
+    readonly property bool lively: state.lively === true
     property var appearance: state.appearance || ({})
     property color accent: appearance.accent || "#a7d8f5"
     property color background: appearance.background || "#20251f"
@@ -298,9 +338,17 @@ ShellRoot {
                         root.selectedId=msg.id;root.recentDropId=msg.id;recentTimer.restart()
                         if(root.autoChatPending){root.autoChatPending=false;root.autoChatId=msg.id;autoChatTimer.restart()}
                     }
-                    else if(msg.type==="ok" && msg.configured) {root.settingsOpen=false;root.failure=""}
+                    else if(msg.type==="ok" && msg.configured) {root.settingsOpen=false;root.loadingModels=false;root.opencodeKey.text="";root.failure=""}
+                    else if(msg.type==="models") {
+                        root.loadingModels=false
+                        let models=Array.isArray(msg.models) ? msg.models.slice() : []
+                        if(root.opencodeSelected && models.indexOf(root.opencodeSelected)<0) models.unshift(root.opencodeSelected)
+                        root.opencodeModels=models
+                        if(!root.opencodeSelected && models.length>0) root.opencodeSelected=models[0]
+                        root.failure=models.length>0 ? "" : "The gateway returned no models."
+                    }
                     else if (msg.type === "preview" && root.dragging) {root.preview=msg.geometry ? msg : null;root.failure=""}
-                    else if (msg.type === "error") root.failure=msg.message
+                    else if (msg.type === "error") {root.loadingModels=false;root.failure=msg.message}
                 } catch(e) { root.failure=String(e) }
             }
         }
@@ -376,10 +424,28 @@ ShellRoot {
         property bool awake:true
         property bool hovered:false
         property string look:"drop"
-        property color tint:look==="cat" ? "#f2c6a0" : look==="sprout" ? "#b8dca4" : root.accent
+        property string mood:"idle"
+        property bool unread:false
+        property real sway:0
+        property real hop:0
+        readonly property bool expressive:root.lively && awake
+        property color tint:look==="bunny" ? "#e9bfd5" : look==="robot" ? "#b6c5ee" : look==="cloud" ? "#d7e6ef" : look==="cat" ? "#f2c6a0" : look==="sprout" ? "#b8dca4" : root.accent
         property real eyeOpen:1
         color:tint
-        scale:hovered && awake ? 1.06 : 1
+        scale:(hovered && awake ? 1.06 : 1)*(expressive ? 1+sway*0.018 : 1)
+        rotation:expressive ? sway*(mood==="thinking" ? 4 : 1.8) : 0
+        transform:Translate {y:face.expressive ? face.hop : 0}
+        SequentialAnimation on hop {
+            running:face.expressive && face.unread && face.visible
+            NumberAnimation {from:0;to:-3;duration:160;easing.type:Easing.OutQuad}
+            NumberAnimation {to:0;duration:240;easing.type:Easing.OutBounce}
+        }
+        SequentialAnimation on sway {
+            running:face.expressive && face.visible
+            loops:Animation.Infinite
+            NumberAnimation {to:1;duration:1500;easing.type:Easing.InOutSine}
+            NumberAnimation {to:-1;duration:1500;easing.type:Easing.InOutSine}
+        }
         Behavior on scale {NumberAnimation{duration:140;easing.type:Easing.OutCubic}}
         Timer {
             interval:3200;repeat:true;running:face.awake
@@ -390,7 +456,46 @@ ShellRoot {
         Rectangle {visible:parent.awake && parent.look==="cat";width:parent.width*0.28;height:width;rotation:45;radius:3;color:parent.color;x:parent.width*0.64;y:-height*0.25;z:-1}
         Rectangle {visible:parent.awake && parent.look==="sprout";width:parent.width*0.34;height:parent.width*0.18;radius:height/2;color:"#7fa76a";rotation:30;x:parent.width*0.2;y:-height*0.65}
         Rectangle {visible:parent.awake && parent.look==="sprout";width:parent.width*0.34;height:parent.width*0.18;radius:height/2;color:"#94bd7c";rotation:-30;x:parent.width*0.49;y:-height*0.65}
-        radius: width*(typeof root.appearance.roundness === "number" ? Math.max(0,Math.min(0.5,root.appearance.roundness)) : 0.48)
+        // Silhouettes stay available in quiet mode, independently of motion.
+        Repeater {
+            model:2
+            delegate:Rectangle {
+                required property int index
+                visible:face.awake && face.look==="bunny"
+                width:face.width*0.19;height:face.height*0.39;radius:width/2
+                x:face.width*(index===0 ? 0.19 : 0.62);y:-height*0.36
+                color:face.tint;rotation:index===0 ? -12 : 12;z:-1
+                Rectangle {anchors.centerIn:parent;width:parent.width*0.45;height:parent.height*0.65;radius:width/2;color:"#cc8ca9"}
+            }
+        }
+        Rectangle {visible:face.awake && face.look==="robot";anchors.horizontalCenter:parent.horizontalCenter;y:-6;width:3;height:8;color:face.tint}
+        Rectangle {visible:face.awake && face.look==="robot";anchors.horizontalCenter:parent.horizontalCenter;y:-8;width:7;height:7;radius:4;color:"#e5b96f"}
+        Repeater {
+            model:3
+            delegate:Rectangle {
+                required property int index
+                visible:face.awake && face.look==="cloud"
+                width:face.width*0.4;height:width;radius:width/2;color:face.tint
+                x:face.width*(0.02+index*0.28);y:-height*(index===1 ? 0.32 : 0.12);z:-1
+            }
+        }
+        Rectangle {
+            visible:face.expressive
+            anchors.horizontalCenter:parent.horizontalCenter;y:parent.height*0.66
+            width:face.width*0.18;height:face.mood==="waiting" ? face.width*0.13 : 3
+            radius:height/2;color:"#27322a"
+            rotation:face.mood==="error" ? -12 : 0
+        }
+        Repeater {
+            model:2
+            delegate:Rectangle {
+                required property int index
+                visible:face.expressive && (face.hovered || face.unread)
+                width:face.width*0.16;height:face.width*0.07;radius:height/2;color:"#df8f9f";opacity:0.65
+                x:face.width*(index===0 ? 0.12 : 0.72);y:face.height*0.59
+            }
+        }
+        radius: look==="robot" ? width*0.22 : width*(typeof root.appearance.roundness === "number" ? Math.max(0,Math.min(0.5,root.appearance.roundness)) : 0.48)
         Behavior on width { NumberAnimation {duration:160} }
         Behavior on height { NumberAnimation {duration:160} }
         Row {
@@ -891,6 +996,7 @@ ShellRoot {
                     DropFace {
                         anchors.centerIn:parent;width:76;height:74
                         look:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook
+                        mood:root.currentDrop ? root.currentDrop.state : "idle"
                         hovered:panelAvatar.containsMouse
                         opacity:!root.currentDrop ? 0.45 : root.dragging && root.dragId===root.currentDrop.id ? 0 : 1
                         Behavior on opacity {NumberAnimation{duration:70}}
@@ -948,13 +1054,23 @@ ShellRoot {
                     ComboBox {
                         id:lookSelector
                         Layout.fillWidth:true;Layout.preferredHeight:28
-                        model:["Drop","Cat","Sprout"];font.pixelSize:11
+                        model:["Drop","Cat","Sprout","Bunny","Robot","Cloud"];font.pixelSize:11
                         currentIndex:root.looks.indexOf(root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook)
                         onActivated:index=>{root.pendingLook=root.looks[index];if(root.currentDrop)root.send({type:"style",id:root.currentDrop.id,appearance:root.looks[index]})}
                     }
                     Button {id:newDropButton;Accessible.name:"New drop";text:"+";ToolTip.visible:hovered;ToolTip.text:"New drop";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:root.blobIds.length<3;onClicked:{root.chatOpen=false;root.send({type:"create",appearance:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook})}}
                     Button {id:deleteDropButton;Accessible.name:"Delete drop";text:"−";ToolTip.visible:hovered;ToolTip.text:"Delete selected drop and conversation";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:!!root.currentDrop;onClicked:root.send({type:"remove",id:root.currentDrop.id})}
                     ToolButton {text:"⚙";ToolTip.visible:hovered;ToolTip.text:"Model connection";Layout.preferredWidth:28;Layout.preferredHeight:28;onClicked:root.openSettings()}
+                }
+                Switch {
+                    id:livelyToggle
+                    Accessible.name:"Lively Drops"
+                    text:"Lively Drops";font.pixelSize:11;palette.windowText:root.ink
+                    Layout.fillWidth:true;Layout.preferredHeight:30
+                    checked:root.lively;enabled:root.connected
+                    onToggled:root.send({type:"lively",enabled:checked})
+                    ToolTip.visible:hovered
+                    ToolTip.text:"Gentle motion, expressive faces and status badges. Turn off for quiet mode."
                 }
                 Switch {
                     id:sudoToggle
@@ -973,24 +1089,86 @@ ShellRoot {
                 }
                 Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;wrapMode:Text.Wrap;color:"#f4a99a";font.pixelSize:10}
             }
-            ColumnLayout {
+            ScrollView {
+                id:settingsScroll
                 visible:root.settingsOpen
-                anchors.fill:parent;anchors.margins:16;spacing:8
-                RowLayout {
-                    Label {text:"Model connection";color:root.ink;font.pixelSize:14;Layout.fillWidth:true}
-                    ToolButton {text:"×";palette.buttonText:root.muted;onClicked:root.settingsOpen=false}
+                anchors.fill:parent;anchors.margins:12
+                contentWidth:availableWidth;clip:true
+                ColumnLayout {
+                    width:settingsScroll.availableWidth;spacing:7
+                    RowLayout {
+                        Layout.fillWidth:true
+                        Label {text:"Model connection";color:root.ink;font.pixelSize:14;Layout.fillWidth:true}
+                        ToolButton {text:"×";palette.buttonText:root.muted;onClicked:root.settingsOpen=false}
+                    }
+                    Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;color:"#f4a99a";font.pixelSize:10;wrapMode:Text.Wrap}
+                    Label {text:"Connection type";color:root.muted;font.pixelSize:10}
+                    ComboBox {
+                        id:connectionType
+                        Layout.fillWidth:true;Layout.preferredHeight:28;font.pixelSize:11
+                        model:["Custom endpoint","Opencode Go"]
+                        currentIndex:root.connectionMode==="opencode_go" ? 1 : 0
+                        onActivated:index=>root.selectConnectionMode(index)
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth:true;spacing:6
+                        visible:root.connectionMode==="custom"
+                        Label {text:"Endpoint URL";color:root.muted;font.pixelSize:11}
+                        TextField {id:endpoint;Layout.fillWidth:true;placeholderText:"http://localhost:11434/v1";font.pixelSize:11;selectByMouse:true}
+                        Label {text:"Model name";color:root.muted;font.pixelSize:11}
+                        TextField {id:modelName;Layout.fillWidth:true;placeholderText:"Model served by your endpoint";font.pixelSize:11;selectByMouse:true}
+                        Label {text:"API-key environment variable (optional)";color:root.muted;font.pixelSize:10}
+                        TextField {id:keyEnv;Layout.fillWidth:true;placeholderText:"e.g. DROPS_API_KEY";font.pixelSize:11;selectByMouse:true}
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth:true;spacing:6
+                        visible:root.connectionMode==="opencode_go"
+                        Label {text:"API key";color:root.muted;font.pixelSize:11}
+                        TextField {
+                            id:opencodeKey
+                            Layout.fillWidth:true;font.pixelSize:11;selectByMouse:true
+                            echoMode:TextInput.Password;placeholderText:"Paste your Opencode Go API key"
+                        }
+                        Label {
+                            Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9
+                            text:"The key is stored only in Drops' config file (mode 0600). Set OPENCODE_API_KEY instead if you prefer the environment."
+                        }
+                        RowLayout {
+                            Layout.fillWidth:true;spacing:6
+                            Label {text:"Model";color:root.muted;font.pixelSize:11;Layout.fillWidth:true}
+                            Button {
+                                id:loadModelsButton
+                                text:root.loadingModels ? "Loading…" : "Load models"
+                                font.pixelSize:10;Layout.preferredHeight:26
+                                enabled:root.connected && !root.loadingModels && root.opencodeHasKey()
+                                onClicked:root.loadModels()
+                            }
+                        }
+                        ComboBox {
+                            id:opencodeModel
+                            Layout.fillWidth:true;Layout.preferredHeight:28;font.pixelSize:11
+                            model:root.opencodeModels
+                            editable:true
+                            enabled:!root.loadingModels
+                            currentIndex:root.opencodeModels.indexOf(root.opencodeSelected)
+                            onActivated:index=>{root.opencodeSelected=root.opencodeModels[index]}
+                            onEditTextChanged:{
+                                const value=String(editText).trim()
+                                if(value!==root.opencodeSelected)root.opencodeSelected=value
+                            }
+                        }
+                    }
+                    CheckBox {id:contentCapture;text:"Read attached window content";palette.windowText:root.ink;font.pixelSize:11}
+                    CheckBox {id:screenCapture;text:"Use screenshots / OCR fallback";palette.windowText:root.ink;font.pixelSize:11;enabled:contentCapture.checked}
+                    CheckBox {id:visionMode;text:"Model supports images";palette.windowText:root.ink;font.pixelSize:11}
+                    Button {
+                        id:saveConnectionButton
+                        text:"Save connection"
+                        Layout.fillWidth:true
+                        enabled:root.connectionMode==="opencode_go" ? (root.opencodeSelected.length>0 && root.opencodeHasKey()) : (endpoint.text.trim().length>0 && modelName.text.trim().length>0)
+                        onClicked:root.saveConnection()
+                    }
                 }
-                Label {text:"Endpoint URL";color:root.muted;font.pixelSize:11}
-                TextField {id:endpoint;Layout.fillWidth:true;placeholderText:"http://localhost:11434/v1";font.pixelSize:11;selectByMouse:true}
-                Label {text:"Model name";color:root.muted;font.pixelSize:11}
-                TextField {id:modelName;Layout.fillWidth:true;placeholderText:"Model served by your endpoint";font.pixelSize:11;selectByMouse:true}
-                Label {text:"API-key environment variable (optional)";color:root.muted;font.pixelSize:10}
-                TextField {id:keyEnv;Layout.fillWidth:true;placeholderText:"e.g. DROPS_API_KEY";font.pixelSize:11;selectByMouse:true}
-                CheckBox {id:contentCapture;text:"Read attached window content";palette.windowText:root.ink;font.pixelSize:11}
-                CheckBox {id:screenCapture;text:"Use screenshots / OCR fallback";palette.windowText:root.ink;font.pixelSize:11;enabled:contentCapture.checked}
-                CheckBox {id:visionMode;text:"Model supports images";palette.windowText:root.ink;font.pixelSize:11}
-                Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;color:"#f4a99a";font.pixelSize:10;wrapMode:Text.Wrap}
-                Button {id:saveConnectionButton;text:"Save connection";Layout.fillWidth:true;enabled:endpoint.text.trim().length>0 && modelName.text.trim().length>0;onClicked:root.send({type:"configure",base_url:endpoint.text,model:modelName.text,api_key_env:keyEnv.text,vision:visionMode.checked,capture_content:contentCapture.checked,screenshots:screenCapture.checked})}
             }
             Popup {
                 id:contextView;x:8;y:8;width:parent.width-16;height:parent.height-16;modal:true;padding:10
@@ -1107,6 +1285,8 @@ ShellRoot {
                         id:face
                         anchors.centerIn:parent
                         awake:placed.awake
+                        mood:placed.blob ? placed.blob.state : "idle"
+                        unread:placed.replying
                         hovered:placed.hovered
                         look:placed.blob ? placed.blob.appearance || "drop" : "drop"
                         opacity:root.dragging && root.dragId===placed.modelData ? 0 : 1
@@ -1137,6 +1317,17 @@ ShellRoot {
                         anchors.right:face.right;anchors.top:face.top;anchors.rightMargin:-8;anchors.topMargin:-8
                         width:17;height:17;radius:8.5;color:"#eed29b"
                         Text {anchors.centerIn:parent;text:"!";color:"#2b2a1f";font.pixelSize:11;font.bold:true}
+                    }
+                    Rectangle {
+                        objectName:"lively-cue-"+placed.modelData
+                        property string cue:!placed.blob ? "" : placed.blob.state==="error" ? "×" : placed.blob.state==="capturing" ? "≡" : placed.blob.state==="stopping" ? "■" : placed.replying ? "✓" : ""
+                        visible:root.lively && cue!=="" && !(root.chatOpen && root.selectedId===placed.modelData)
+                        anchors.right:face.right;anchors.bottom:face.bottom;anchors.rightMargin:-5;anchors.bottomMargin:-4
+                        width:17;height:17;radius:cue==="×" ? 4 : 8.5
+                        color:cue==="×" ? "#f4a99a" : cue==="✓" ? "#b8dca4" : root.accent
+                        Text {anchors.centerIn:parent;text:parent.cue;color:"#27322a";font.pixelSize:11;font.bold:true}
+                        Accessible.role:Accessible.StaticText
+                        Accessible.name:cue==="✓" ? "Reply ready" : root.stateCaption(placed.blob)
                     }
                     DragArea {id:dropArea;blobId:placed.modelData}
                     ChatBubble {blob:placed.blob;monitor:monitorScope.monitor;place:placed.pos;hostVisible:placed.onMonitor}

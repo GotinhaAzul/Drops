@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use buddy_ai::{
-    build_request_body, complete, endpoint, is_cancelled, ProviderConfig, ProviderError,
-    ProviderEvent, StreamAccumulator,
+    build_request_body, complete, endpoint, is_cancelled, list_models, parse_models,
+    ProviderConfig, ProviderError, ProviderEvent, StreamAccumulator,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -35,6 +35,14 @@ impl MockResponse {
             status_line: "200 OK".to_string(),
             content_type: "text/event-stream".to_string(),
             chunks: vec![(Duration::ZERO, body)],
+        }
+    }
+
+    fn json(body: &str) -> Self {
+        Self {
+            status_line: "200 OK".to_string(),
+            content_type: "application/json".to_string(),
+            chunks: vec![(Duration::ZERO, body.as_bytes().to_vec())],
         }
     }
 
@@ -163,6 +171,7 @@ fn config(base_url: String, api_key_env: &str) -> ProviderConfig {
         vision: false,
         tools: true,
         max_tokens_param: "max_tokens".to_string(),
+        ..ProviderConfig::default()
     }
 }
 
@@ -594,4 +603,170 @@ fn request_helpers_are_available_as_pure_functions() {
         .apply(&json!({"choices":[{"index":0,"delta":{"content":"x"}}]}))
         .expect("chunk");
     assert_eq!(accumulator.content(), "x");
+}
+
+#[test]
+fn parse_models_accepts_common_shapes_and_is_stable() {
+    let models = parse_models(&json!({
+        "object": "list",
+        "data": [
+            {"id": "kimi-k3", "object": "model"},
+            {"id": "deepseek-v4.1-flash"},
+            {"id": "  kimi-k3  "},
+            {"id": ""},
+            {"object": "model"}
+        ]
+    }));
+    assert_eq!(models, vec!["deepseek-v4.1-flash", "kimi-k3"]);
+    assert_eq!(parse_models(&json!(["m2", "m1", "m2"])), vec!["m1", "m2"]);
+    assert!(parse_models(&json!({"data": "nope"})).is_empty());
+}
+
+#[tokio::test]
+async fn stored_key_takes_precedence_over_the_environment() {
+    const KEY_ENV: &str = "BUDDY_AI_TEST_KEY_UNSET_PRECEDENCE";
+    std::env::remove_var(KEY_ENV);
+    let body = sse(r#"{"choices":[{"index":0,"delta":{"content":"x"}}]}"#);
+    let (base_url, request, server) = spawn_mock(MockResponse::sse(body.into_bytes())).await;
+    let mut provider = config(base_url, KEY_ENV);
+    provider.api_key = Some("stored-secret".into());
+
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    complete(
+        &provider,
+        &[json!({"role":"user","content":"x"})],
+        &[],
+        sender,
+        CancellationToken::new(),
+    )
+    .await
+    .expect("complete");
+
+    let captured = request.await.expect("request");
+    assert_eq!(
+        captured.headers.get("authorization").map(String::as_str),
+        Some("Bearer stored-secret")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn lists_models_with_the_stored_key() {
+    let (base_url, request, server) = spawn_mock(MockResponse::json(
+        r#"{"object":"list","data":[{"id":"z-model"},{"id":"a-model"}]}"#,
+    ))
+    .await;
+    let mut provider = config(base_url, "");
+    provider.api_key = Some("stored-secret".into());
+
+    let models = list_models(&provider).await.expect("models");
+    assert_eq!(models, vec!["a-model", "z-model"]);
+
+    let captured = request.await.expect("request");
+    assert_eq!(captured.path, "/v1/models");
+    assert_eq!(
+        captured.headers.get("authorization").map(String::as_str),
+        Some("Bearer stored-secret")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn model_list_errors_are_reported() {
+    let (base_url, _request, server) = spawn_mock(MockResponse {
+        status_line: "401 Unauthorized".to_string(),
+        content_type: "application/json".to_string(),
+        chunks: vec![(
+            Duration::ZERO,
+            br#"{"error":{"message":"invalid api key"}}"#.to_vec(),
+        )],
+    })
+    .await;
+    let error = list_models(&config(base_url, ""))
+        .await
+        .expect_err("unauthorized");
+    assert!(error.to_string().contains("401"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn upstream_errors_are_scrubbed_of_the_configured_key() {
+    let (base_url, _request, server) = spawn_mock(MockResponse {
+        status_line: "401 Unauthorized".to_string(),
+        content_type: "application/json".to_string(),
+        chunks: vec![(
+            Duration::ZERO,
+            br#"{"error":{"message":"Incorrect API key provided: stored-secret"}}"#.to_vec(),
+        )],
+    })
+    .await;
+    let mut provider = config(base_url, "");
+    provider.api_key = Some("stored-secret".into());
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let error = complete(
+        &provider,
+        &[json!({"role":"user","content":"x"})],
+        &[],
+        sender,
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("401");
+    assert!(!error.to_string().contains("stored-secret"));
+    assert!(error.to_string().contains("<redacted>"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn opencode_go_sends_its_session_header_and_identifies_the_client() {
+    let body = sse(r#"{"choices":[{"index":0,"delta":{"content":"x"}}]}"#);
+    let (base_url, request, server) = spawn_mock(MockResponse::sse(body.into_bytes())).await;
+    let mut provider = config(base_url, "");
+    provider.kind = buddy_ai::ProviderKind::OpencodeGo;
+    provider.api_key = Some("stored-secret".into());
+    provider.session_id = Some("drop-42".into());
+
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    complete(
+        &provider,
+        &[json!({"role":"user","content":"x"})],
+        &[],
+        sender,
+        CancellationToken::new(),
+    )
+    .await
+    .expect("complete");
+
+    let captured = request.await.expect("request");
+    assert_eq!(
+        captured
+            .headers
+            .get("x-opencode-session")
+            .map(String::as_str),
+        Some("drop-42")
+    );
+    assert_eq!(
+        captured.headers.get("user-agent").map(String::as_str),
+        Some(concat!("drops/", env!("CARGO_PKG_VERSION")))
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn opencode_go_requires_a_session_id_before_the_request() {
+    let mut provider = config("http://127.0.0.1:9/v1".to_string(), "");
+    provider.kind = buddy_ai::ProviderKind::OpencodeGo;
+    provider.api_key = Some("stored-secret".into());
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let error = complete(
+        &provider,
+        &[json!({"role":"user","content":"x"})],
+        &[],
+        sender,
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("missing session");
+    assert!(error.to_string().contains("session id"));
+    assert!(!error.to_string().contains("stored-secret"));
 }

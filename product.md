@@ -217,6 +217,7 @@ These are settled choices, so agents building Buddy should follow them rather th
 
 ```toml
 [provider.local]
+kind = "custom"
 base_url = "http://localhost:11434/v1"
 api_key_env = ""
 model = "qwen2.5-vl:7b"

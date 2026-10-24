@@ -13,10 +13,11 @@ Requires Linux, a Rust toolchain, Hyprland, and Quickshell with Qt Quick Control
 This installs Drops under `~/.local` and enables a small native widget in the Omarchy top bar. Click the drop icon to open its compact panel. The panel stays closed on startup.
 
 - **+** creates a drop (maximum three); **−** deletes the selected drop and conversation, stopping any running turn first.
-- Choose **Drop**, **Cat**, or **Sprout** to change that drop’s appearance.
+- Choose **Drop**, **Cat**, **Sprout**, **Bunny**, **Robot**, or **Cloud** to change that drop’s appearance.
+- **Lively Drops** in the panel enables gentle swaying, a little hop when a reply arrives, expressive faces and extra status badges: **≡** reading, **■** stopping, **×** error, and **✓** unread reply. Thinking keeps its animated dots; approval keeps its **!** cue. Turn it off for the quieter appearance. It starts off and is saved across restarts; avatar choices are always available.
 - Drag the avatar onto a window or empty workspace. A floating avatar follows the pointer with pickup and settle animations, and the panel closes after placement.
 - A window drop is deleted when its attached window closes. A workspace drop stays until you delete it.
-- **⚙ Model connection** lets you paste the endpoint URL, enter the model name and save. For authentication, enter the name of an existing API-key environment variable; the key itself is never stored in TOML. A missing config is supported for first-run setup.
+- **⚙ Model connection** offers two choices. **Custom endpoint** (the default) keeps the original bring-your-own OpenAI-compatible setup: paste the endpoint URL, enter the model name and, optionally, the name of an environment variable that holds the key. **Opencode Go** asks for an Opencode Go API key, loads the gateway's model list, and lets you pick a model. Each drop sends its own stable session id, as the gateway recommends for routing and prompt caching. A missing config is supported for first-run setup.
 - **Sudo mode** runs mutating and dangerous tools without a per-call approval prompt. Validation, workspace confinement, diff previews and backups still apply, and shell access still depends on the anchored window. It starts off, is saved across restarts, and its switch turns amber while enabled.
 
 Click a placed drop to open its in-place chat bubble. It greets the anchored window, offers contextual quick actions, and grows into a scrollable conversation. Sending collapses the bubble; the reply returns as a short, truncated bubble above the drop, and clicking it or the drop reopens the full conversation. Idle drops shrink to colored dots. Click the anchor label to inspect context; Enter sends, Escape closes, and the stop icon cancels the current turn. `buddyctl cancel` stops all turns.
@@ -35,7 +36,10 @@ buddyctl toggle
 buddyctl create --appearance cat
 buddyctl style BLOB_ID sprout
 buddyctl sudo on                # off restores per-call approval
+buddyctl lively on              # off restores quiet mode
 buddyctl configure http://localhost:11434/v1 MODEL_NAME
+OPENCODE_API_KEY=... buddyctl configure https://opencode.ai/zen/go/v1 MODEL --mode opencode-go
+OPENCODE_API_KEY=... buddyctl models # list models; a key saved in settings also works
 buddyctl drop 300 200
 buddyctl send BLOB_ID 'What is open here?'
 buddyctl context BLOB_ID
@@ -50,7 +54,7 @@ buddyctl watch
 
 `DROPS_SOCKET` overrides the socket path (default `$XDG_RUNTIME_DIR/drops.sock`). If `XDG_RUNTIME_DIR` is absent, an explicit private `DROPS_SOCKET` path is required. `buddyd --config PATH --data-dir PATH --headless` supports isolated development without desktop access. Headless anchors are explicitly synthetic workspaces and have no shell capability.
 
-The socket uses newline-delimited JSON and mode 0600. `buddyctl bridge` connects stdin/stdout bidirectionally for the QML shell. `docs/contracts.md` describes crate boundaries. Sessions and blob metadata live under `$XDG_DATA_HOME/drops` (default `~/.local/share/drops`); API keys are read from the environment variable named by `api_key_env` and are never written by Drops.
+The socket uses newline-delimited JSON and mode 0600. `buddyctl bridge` connects stdin/stdout bidirectionally for the QML shell. `docs/contracts.md` describes crate boundaries. Sessions and blob metadata live under `$XDG_DATA_HOME/drops` (default `~/.local/share/drops`). A custom endpoint reads its key from the environment variable named by `api_key_env`. Opencode Go accepts `OPENCODE_API_KEY` too; a key entered in settings is stored only in the Drops config file, which is written with mode 0600 and is never included in UI state or logs. The settings screen masks it, and leaving the field blank keeps the saved key.
 
 ## Working with the anchored app
 
@@ -103,7 +107,10 @@ uv run --with python-docx --with openpyxl python tests/office-compat.py
 python3 tests/widget-smoke.py
 python3 tests/qml-interactions.py
 python3 tests/sudo-smoke.py
+python3 tests/qml-opencode-settings.py
+python3 tests/lively-smoke.py
 python3 tests/qml-bubble.py
+DROPS_TEST_LIVELY=1 python3 tests/qml-bubble.py
 python3 tests/qml-bubble-position.py
 python3 tests/failure-smoke.py
 python3 tests/window-content-smoke.py
