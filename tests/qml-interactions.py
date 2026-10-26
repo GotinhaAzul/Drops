@@ -64,9 +64,9 @@ for line in sys.stdin:
                 if(root.lively)return
                 if(testPanelFace.rotation!==0){console.log("TEST_FAILURE motion continued in quiet mode");Qt.quit();return}
                 root.testPhase=3;break
-            case 12:if(root.currentDrop.appearance!=="bunny")return;lookSelector.activated(4);root.testPhase=13;break
-            case 13:if(root.currentDrop.appearance!=="robot")return;lookSelector.activated(5);root.testPhase=14;break
-            case 14:if(root.currentDrop.appearance!=="cloud")return;lookSelector.activated(1);root.testPhase=15;break
+            case 12:if(root.currentDrop.appearance!=="bunny")return;lookRepeater.itemAt(4).activate();root.testPhase=13;break
+            case 13:if(root.currentDrop.appearance!=="robot")return;lookRepeater.itemAt(5).activate();root.testPhase=14;break
+            case 14:if(root.currentDrop.appearance!=="cloud")return;lookRepeater.itemAt(1).activate();root.testPhase=15;break
             case 15:if(root.currentDrop.appearance!=="cat")return;livelyToggle.checked=true;livelyToggle.toggled();root.testPhase=10;break
             case 0:root.pendingLook="drop";newDropButton.clicked();root.testPhase++;break
             case 1:if(!root.currentDrop)return;
@@ -76,14 +76,17 @@ for line in sys.stdin:
             case 16:if(root.currentDrop.directory!=="/tmp/chosen-folder")return;
                 if(root.directoryLabel(root.currentDrop)!=="/tmp/chosen-folder"){console.log("TEST_FAILURE selected directory label");Qt.quit();return}
                 directoryButton.clicked();automaticDirectoryButton.clicked();root.testPhase=17;break
-            case 17:if(root.currentDrop.directory!==null)return;lookSelector.activated(1);root.testPhase=2;break
+            case 17:if(root.currentDrop.directory!==null)return;lookRepeater.itemAt(1).activate();root.testPhase=2;break
             case 2:if(root.currentDrop.appearance!=="cat" || !root.testGhost)return;
-                root.dragLook="cat";root.cursorReady=true;root.skipMotion=true;root.cursor=({x:100,y:100});root.dragging=true;lookSelector.activated(3);root.testPhase=12;break
+                if(lookRepeater.count!==6 || looksRow.width<=0 || !lookRepeater.itemAt(1).selected){console.log("TEST_FAILURE appearance selector did not render or select");Qt.quit();return}
+                root.dragLook="cat";root.cursorReady=true;root.skipMotion=true;root.cursor=({x:100,y:100});root.dragging=true;lookRepeater.itemAt(3).activate();root.testPhase=12;break
             case 3:root.skipMotion=false;root.cursor=({x:500,y:400});sample.start();root.testPhase++;break
             case 4:if(!root.animationSampled || Math.abs(root.testGhost.x-478)>1)return;
                 root.drop(root.currentDrop.id);root.testPhase++;break
             case 5:if(root.state.panel_open)return;
-                root.loadSettings();root.settingsOpen=true;endpoint.text="http://127.0.0.1:1234/v1";modelName.text="demo";keyEnv.text="";saveConnectionButton.clicked();root.testPhase++;break
+                root.loadSettings();root.settingsOpen=true;
+                if(!saveConnectionButton.visible){console.log("TEST_FAILURE save footer not visible");Qt.quit();return}
+                endpoint.text="http://127.0.0.1:1234/v1";modelName.text="demo";keyEnv.text="";saveConnectionButton.clicked();root.testPhase++;break
             case 6:if(root.settingsOpen)return;sudoToggle.checked=true;sudoToggle.toggled();root.testPhase++;break
             case 7:if(!root.sudo)return;sudoToggle.checked=false;sudoToggle.toggled();root.testPhase++;break
             case 8:if(root.sudo)return;deleteDropButton.clicked();root.testPhase++;break
@@ -108,4 +111,4 @@ for line in sys.stdin:
     assert [c["enabled"] for c in commands if c["type"]=="sudo"]==[True,False]
     for look in ["bunny","robot","cloud"]:
         assert any(c["type"]=="style" and c["appearance"]==look for c in commands)
-    print("PASS: real QML create/style/delete controls, endpoint form, sudo toggle, lively motion start/stop, panel close on drop, interpolated pointer-following animation, all new styles")
+    print("PASS: redesigned panel controls, appearance chips and selected ring, pinned settings save, endpoint form, sudo toggle, lively motion start/stop, panel close on drop, interpolated pointer-following animation")

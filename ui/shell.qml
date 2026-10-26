@@ -149,6 +149,51 @@ ShellRoot {
         if(app.partial)pieces.push("Partial context")
         return pieces.join("\n")
     }
+    function inkTint(alpha) { return Qt.rgba(root.ink.r,root.ink.g,root.ink.b,alpha) }
+    function accentTint(alpha) { return Qt.rgba(root.accent.r,root.accent.g,root.accent.b,alpha) }
+    function lookTint(look) {
+        return look==="bunny" ? "#e9bfd5" : look==="robot" ? "#b6c5ee" : look==="cloud" ? "#d7e6ef" : look==="cat" ? "#f2c6a0" : look==="sprout" ? "#b8dca4" : root.accent
+    }
+    function lookName(look) {
+        const value=String(look || "drop")
+        return value.charAt(0).toUpperCase()+value.slice(1)
+    }
+    function dropLook(blob) { return blob ? blob.appearance || "drop" : root.pendingLook }
+    function dropNumber(blob) {
+        const index=blob ? root.blobIds.indexOf(blob.id) : -1
+        return index<0 ? 1 : index+1
+    }
+    function modelLabel() {
+        const model=String(root.state.connection && root.state.connection.model || "").trim()
+        if(!root.connected)return "reconnecting"
+        if(!model)return "no model yet"
+        return model.split("/").pop()
+    }
+    function connectionColor() {
+        if(!root.connected || !root.hasModel)return "#e5b96f"
+        if(root.capturing)return root.accent
+        if(root.selected && root.selected.state==="error")return "#f4a99a"
+        return "#9fbf8f"
+    }
+    function heroStatus(blob) {
+        if(!root.connected)return "Reconnecting to buddyd"
+        if(!blob)return "Create a drop to begin"
+        const caption=root.stateCaption(blob)
+        if(caption)return caption
+        if(blob.placement && blob.placement.anchor.kind==="panel")return "Not placed yet"
+        return "Idle · ready when you are"
+    }
+    function heroHint(blob) {
+        if(!blob)return "Up to three drops can live on your desktop"
+        if(!blob.placement || blob.placement.anchor.kind==="panel")return "Drag the face onto a window or workspace"
+        return "Click the face to chat · drag to move"
+    }
+    function chooseLook(index) {
+        if(index<0 || index>=root.looks.length)return
+        const look=root.looks[index]
+        root.pendingLook=look
+        if(root.currentDrop)root.send({type:"style",id:root.currentDrop.id,appearance:look})
+    }
     function openSettings() {
         dismissOverlays();loadSettings();settingsOpen=true;failure=""
         if(!state.panel_open)send({type:"toggle"})
@@ -506,7 +551,7 @@ ShellRoot {
         property real sway:0
         property real hop:0
         readonly property bool expressive:root.lively && awake
-        property color tint:look==="bunny" ? "#e9bfd5" : look==="robot" ? "#b6c5ee" : look==="cloud" ? "#d7e6ef" : look==="cat" ? "#f2c6a0" : look==="sprout" ? "#b8dca4" : root.accent
+        property color tint:root.lookTint(look)
         property real eyeOpen:1
         color:tint
         scale:(hovered && awake ? 1.06 : 1)*(expressive ? 1+sway*0.018 : 1)
@@ -612,6 +657,198 @@ ShellRoot {
             root.dragging=false;root.preview=null
         }
         onCanceled: {root.dragging=false;root.preview=null;root.settling=false;root.pointerPending=false}
+    }
+    component SectionLabel: Label {
+        color:root.muted;font.pixelSize:9;font.letterSpacing:1.3
+        font.capitalization:Font.AllUppercase;font.bold:true
+    }
+    component PanelCard: Rectangle {
+        id:card
+        property int pad:10
+        default property alias content:cardColumn.data
+        implicitHeight:cardColumn.implicitHeight+card.pad*2
+        radius:14
+        color:root.inkTint(0.035)
+        border.width:1
+        border.color:root.inkTint(0.10)
+        ColumnLayout {
+            id:cardColumn
+            anchors.fill:parent;anchors.margins:card.pad
+            spacing:7
+        }
+    }
+    component IconButton: ToolButton {
+        id:icon
+        implicitWidth:28;implicitHeight:28
+        hoverEnabled:true
+        background:Rectangle {
+            radius:9
+            color:icon.hovered ? root.inkTint(0.08) : "transparent"
+            border.width:icon.hovered ? 1 : 0
+            border.color:root.inkTint(0.10)
+            Behavior on color {ColorAnimation{duration:100}}
+        }
+        contentItem:Text {
+            text:icon.text;color:icon.hovered ? root.ink : root.muted
+            font.pixelSize:13;horizontalAlignment:Text.AlignHCenter;verticalAlignment:Text.AlignVCenter
+        }
+    }
+    component ActionButton: Button {
+        id:action
+        property bool primary:false
+        property bool danger:false
+        implicitHeight:30
+        hoverEnabled:true
+        leftPadding:10;rightPadding:10
+        opacity:enabled ? 1 : 0.38
+        scale:pressed ? 0.98 : 1
+        Behavior on scale {NumberAnimation{duration:80}}
+        background:Rectangle {
+            radius:9
+            color:action.primary
+                ? root.accentTint(action.hovered ? 0.26 : 0.16)
+                : action.danger
+                    ? Qt.rgba(0.95,0.45,0.38,action.hovered ? 0.16 : 0.08)
+                    : root.inkTint(action.hovered ? 0.075 : 0.035)
+            border.width:1
+            border.color:action.primary
+                ? root.accentTint(action.hovered ? 0.75 : 0.48)
+                : action.danger
+                    ? Qt.rgba(0.95,0.45,0.38,action.hovered ? 0.55 : 0.30)
+                    : root.inkTint(action.hovered ? 0.20 : 0.10)
+            Behavior on color {ColorAnimation{duration:110}}
+        }
+        contentItem:Text {
+            text:action.text
+            color:action.primary ? root.accent : action.danger ? "#f0a79c" : root.ink
+            font.pixelSize:11;font.bold:action.primary
+            horizontalAlignment:Text.AlignHCenter;verticalAlignment:Text.AlignVCenter
+            elide:Text.ElideRight
+        }
+    }
+    component SegmentButton: Button {
+        id:segment
+        property bool selected:false
+        implicitHeight:28
+        hoverEnabled:true
+        leftPadding:8;rightPadding:8
+        background:Rectangle {
+            radius:7
+            color:segment.selected ? root.accentTint(0.20) : segment.hovered ? root.inkTint(0.06) : "transparent"
+            border.width:1
+            border.color:segment.selected ? root.accentTint(0.55) : "transparent"
+            Behavior on color {ColorAnimation{duration:100}}
+        }
+        contentItem:Text {
+            text:segment.text
+            color:segment.selected ? root.accent : root.muted
+            font.pixelSize:10;font.bold:segment.selected
+            horizontalAlignment:Text.AlignHCenter;verticalAlignment:Text.AlignVCenter
+            elide:Text.ElideRight
+        }
+    }
+    component ThemeSwitch: Switch {
+        id:sw
+        implicitWidth:36;implicitHeight:22
+        indicator:Rectangle {
+            implicitWidth:36;implicitHeight:20;radius:10
+            x:0;y:(sw.height-height)/2
+            color:sw.checked ? root.accentTint(0.72) : root.inkTint(0.12)
+            border.width:1
+            border.color:sw.checked ? root.accentTint(0.85) : root.inkTint(0.16)
+            Behavior on color {ColorAnimation{duration:130}}
+            Rectangle {
+                width:16;height:16;radius:8;y:2
+                x:sw.checked ? parent.width-width-2 : 2
+                color:sw.checked ? root.background : root.muted
+                Behavior on x {NumberAnimation{duration:130;easing.type:Easing.OutCubic}}
+            }
+        }
+    }
+    component ThemedCheck: CheckBox {
+        id:check
+        spacing:8
+        font.pixelSize:11
+        indicator:Rectangle {
+            implicitWidth:16;implicitHeight:16;radius:5
+            x:check.leftPadding
+            y:check.topPadding+(check.availableHeight-height)/2
+            color:check.checked ? root.accentTint(0.75) : root.inkTint(0.05)
+            border.width:1
+            border.color:check.checked ? root.accentTint(0.9) : root.inkTint(0.18)
+            Text {
+                anchors.centerIn:parent;text:"✓";visible:check.checked
+                color:root.background;font.pixelSize:10;font.bold:true
+            }
+            Behavior on color {ColorAnimation{duration:100}}
+        }
+        contentItem:Text {
+            leftPadding:check.indicator ? check.indicator.width+check.spacing : 0
+            text:check.text;color:root.ink;font.pixelSize:11
+            verticalAlignment:Text.AlignVCenter;wrapMode:Text.Wrap
+        }
+    }
+    component FramedField: TextField {
+        id:field
+        implicitHeight:34
+        font.pixelSize:11
+        color:root.ink
+        placeholderTextColor:root.muted
+        selectByMouse:true
+        leftPadding:10;rightPadding:10
+        background:Rectangle {
+            radius:8
+            color:root.inkTint(0.045)
+            border.width:1
+            border.color:field.activeFocus ? root.accentTint(0.65) : root.inkTint(0.12)
+            Behavior on border.color {ColorAnimation{duration:110}}
+        }
+    }
+    component ContextBlock: TextArea {
+        id:block
+        readOnly:true
+        wrapMode:TextEdit.WrapAnywhere
+        textFormat:TextEdit.PlainText
+        color:root.ink;font.pixelSize:10
+        leftPadding:9;rightPadding:9;topPadding:7;bottomPadding:7
+        background:Rectangle {
+            radius:8
+            color:root.inkTint(0.04)
+            border.width:1
+            border.color:root.inkTint(0.08)
+        }
+    }
+    component LookChip: Item {
+        id:chip
+        property string look:"drop"
+        property bool selected:false
+        property bool hovered:false
+        signal picked()
+        implicitWidth:38;implicitHeight:38
+        function activate() { picked() }
+        Rectangle {
+            anchors.fill:parent;radius:12
+            color:chip.selected ? root.accentTint(0.14) : chip.hovered ? root.inkTint(0.06) : "transparent"
+            border.width:1
+            border.color:chip.selected ? root.accentTint(0.55) : root.inkTint(0.08)
+            Behavior on color {ColorAnimation{duration:100}}
+        }
+        DropFace {
+            width:24;height:23;anchors.centerIn:parent
+            look:chip.look;awake:true;mood:"idle";hovered:chip.hovered
+        }
+        Rectangle {
+            visible:chip.selected
+            width:4;height:4;radius:2;anchors.bottom:parent.bottom;anchors.bottomMargin:3;anchors.horizontalCenter:parent.horizontalCenter
+            color:root.accent
+        }
+        MouseArea {
+            anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
+            onEntered:chip.hovered=true;onExited:chip.hovered=false
+            onClicked:chip.activate()
+        }
+        Accessible.role:Accessible.Button
+        Accessible.name:root.lookName(chip.look)+" look"
     }
 
     // The conversation lives with the drop: a compact speech bubble that grows
@@ -1074,8 +1311,8 @@ ShellRoot {
         visible:root.state.panel_open && !root.capturing
         anchors {top:true;right:true}
         margins {top:40;right:20}
-        implicitWidth:320
-        implicitHeight:root.settingsOpen ? 444 : panelContent.implicitHeight+28
+        implicitWidth:344
+        implicitHeight:root.settingsOpen ? 620 : panelContent.implicitHeight+44
         color:"transparent";exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-panel"
         WlrLayershell.keyboardFocus:WlrKeyboardFocus.OnDemand
@@ -1090,156 +1327,336 @@ ShellRoot {
         }
         onVisibleChanged: if(!visible) root.dismissOverlays()
         Rectangle {
-            anchors.fill:parent;color:root.background;radius:18;border.color:"#4b5545";border.width:1
+            anchors.fill:parent;radius:20
+            gradient:Gradient {
+                GradientStop {position:0;color:Qt.lighter(root.background,1.09)}
+                GradientStop {position:0.42;color:root.background}
+                GradientStop {position:1;color:Qt.darker(root.background,0.94)}
+            }
+            border.color:root.accentTint(0.18);border.width:1
+            Rectangle {
+                anchors.top:parent.top;anchors.horizontalCenter:parent.horizontalCenter
+                width:parent.width-56;height:1;color:root.accentTint(0.32)
+            }
             ColumnLayout {
                 id:panelContent
                 visible:!root.settingsOpen
-                anchors.fill:parent;anchors.margins:14;spacing:8
-                Item {
-                    Layout.fillWidth:true;Layout.preferredHeight:92
-                    DropFace {
-                        anchors.centerIn:parent;width:76;height:74
-                        look:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook
-                        mood:root.currentDrop ? root.currentDrop.state : "idle"
-                        hovered:panelAvatar.containsMouse
-                        opacity:!root.currentDrop ? 0.45 : root.dragging && root.dragId===root.currentDrop.id ? 0 : 1
-                        Behavior on opacity {NumberAnimation{duration:70}}
-                        DragArea {id:panelAvatar;enabled:!!root.currentDrop;blobId:root.currentDrop ? root.currentDrop.id : ""}
+                anchors.fill:parent;anchors.margins:12;spacing:6
+                RowLayout {
+                    Layout.fillWidth:true;spacing:8
+                    Item {
+                        Layout.preferredWidth:10;Layout.preferredHeight:10;Layout.alignment:Qt.AlignVCenter
+                        Rectangle {anchors.centerIn:parent;width:16;height:16;radius:8;color:root.connectionColor();opacity:0.16}
+                        Rectangle {anchors.centerIn:parent;width:7;height:7;radius:3.5;color:root.connectionColor()}
                     }
-                    ToolButton {
-                        anchors.top:parent.top;anchors.right:parent.right
-                        text:root.selectedBusy ? "■" : "×";font.pixelSize:13;palette.buttonText:root.muted
-                        onClicked: root.selectedBusy ? root.send({type:"cancel",id:root.selectedId}) : root.send({type:"toggle"})
-                    }
-                    Row {
-                        anchors.bottom:parent.bottom;anchors.horizontalCenter:parent.horizontalCenter;spacing:9
-                        visible:root.blobIds.length>1
-                        Repeater {
-                            model:root.blobIds
-                            delegate: Rectangle {
-                                required property string modelData
-                                width:18;height:18;radius:9;color:root.accent;opacity:root.selectedId===modelData ? 1 : 0.4
-                                Text {anchors.centerIn:parent;text:root.blobIds.indexOf(parent.modelData)+1;color:root.background;font.pixelSize:10}
-                                Accessible.role:Accessible.Button
-                                Accessible.name:"Select Drop "+(root.blobIds.indexOf(modelData)+1)
-                                MouseArea {anchors.fill:parent;anchors.margins:-5;onClicked:{root.selectedId=parent.modelData;root.chatOpen=false}}
-                            }
-                        }
-                    }
-                }
-                Label {
-                    Layout.fillWidth:true;horizontalAlignment:Text.AlignHCenter;color:root.muted;font.pixelSize:10;elide:Text.ElideRight
-                    text:root.currentDrop ? root.currentDrop.placement.label : "Make a drop, then drag it onto a window"
-                    MouseArea {anchors.fill:parent;enabled:!!root.selected;onClicked:root.inspectContext()}
-                }
-                Button {
-                    id:chatButton
-                    Layout.fillWidth:true;Layout.preferredHeight:32
-                    enabled:!!root.currentDrop && root.currentDrop.placement.anchor.kind!=="panel"
-                    text:!root.currentDrop ? "Make a drop to start" : enabled ? "Chat with this drop  →" : "Drag me onto a window"
-                    background:Rectangle {
-                        radius:9
-                        color:chatButton.enabled ? Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.18) : Qt.rgba(root.muted.r,root.muted.g,root.muted.b,0.08)
-                        border.color:chatButton.enabled ? Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.5) : "#3d473a";border.width:1
-                    }
-                    contentItem:Text {
-                        text:chatButton.text;font.pixelSize:11
-                        color:chatButton.enabled ? root.accent : root.muted
-                        horizontalAlignment:Text.AlignHCenter;verticalAlignment:Text.AlignVCenter
-                        elide:Text.ElideRight
-                    }
-                    onClicked:root.openChat(root.currentDrop.id,true)
-                }
-                Rectangle {
-                    Layout.fillWidth:true;implicitHeight:directoryInfo.implicitHeight+18
-                    radius:9;color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.06)
-                    border.color:"#4b5545"
                     ColumnLayout {
-                        id:directoryInfo;anchors.fill:parent;anchors.margins:9;spacing:4
-                        RowLayout {
-                            Layout.fillWidth:true
-                            Label {text:"File access";color:root.ink;font.pixelSize:11;Layout.fillWidth:true}
-                            ToolButton {
-                                id:directoryButton;text:"Choose folder…";font.pixelSize:10
-                                enabled:!!root.selected && !root.selectedBusy && root.connected
-                                Accessible.name:"Choose working directory"
-                                onClicked:root.openDirectory()
-                            }
+                        Layout.fillWidth:true;spacing:0
+                        Label {text:"DROPS";color:root.ink;font.pixelSize:10;font.bold:true;font.letterSpacing:2.4}
+                        Label {
+                            Layout.fillWidth:true;elide:Text.ElideRight;font.pixelSize:9
+                            color:root.failure ? "#f4a99a" : root.muted
+                            text:root.failure ? root.failure : !root.connected ? "Reconnecting to buddyd" : root.hasModel ? "Connected · "+root.modelLabel() : "No model configured"
+                            MouseArea {id:statusHover;anchors.fill:parent;hoverEnabled:true;acceptedButtons:Qt.NoButton}
+                            ToolTip.visible:statusHover.containsMouse && !!root.failure;ToolTip.text:root.failure
                         }
-                        Label {Layout.fillWidth:true;text:root.directoryLabel(root.selected);elide:Text.ElideMiddle;color:root.accent;font.pixelSize:11;ToolTip.visible:directoryHover.containsMouse;ToolTip.text:text
-                            MouseArea {id:directoryHover;anchors.fill:parent;hoverEnabled:true;onClicked:root.inspectContext()}
-                        }
-                        Label {Layout.fillWidth:true;text:root.sudo ? "Edits run without prompts in this directory" : root.directoryHint(root.selected);wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10}
                     }
-                }
-                Label {
-                    visible:!!root.selected && !!root.selected.context && !!root.selected.context.content
-                    Layout.fillWidth:true;horizontalAlignment:Text.AlignHCenter;color:root.muted;font.pixelSize:10
-                    text:!root.selected || !root.selected.context || !root.selected.context.content ? "" : root.selected.context.content.status==="captured" ? "Window content attached · click to inspect" : "Window content unavailable · click for details"
-                    MouseArea {anchors.fill:parent;onClicked:root.inspectContext()}
-                }
-                Label {
-                    visible:root.appSummary(root.selected).length>0
-                    Layout.fillWidth:true;text:root.appSummary(root.selected);wrapMode:Text.Wrap;textFormat:Text.PlainText
-                    maximumLineCount:3;elide:Text.ElideRight;color:root.accent;font.pixelSize:10
-                    MouseArea {anchors.fill:parent;onClicked:root.inspectContext()}
+                    IconButton {
+                        text:"⚙";Accessible.name:"Model connection"
+                        ToolTip.visible:hovered;ToolTip.text:"Model connection"
+                        onClicked:root.openSettings()
+                    }
+                    IconButton {
+                        text:root.selectedBusy ? "■" : "×"
+                        Accessible.name:root.selectedBusy ? "Stop this turn" : "Close panel"
+                        ToolTip.visible:hovered;ToolTip.text:Accessible.name
+                        onClicked:root.selectedBusy ? root.send({type:"cancel",id:root.selectedId}) : root.send({type:"toggle"})
+                    }
                 }
                 RowLayout {
                     Layout.fillWidth:true;spacing:5
-                    ComboBox {
-                        id:lookSelector
-                        Layout.fillWidth:true;Layout.preferredHeight:28
-                        model:["Drop","Cat","Sprout","Bunny","Robot","Cloud"];font.pixelSize:11
-                        currentIndex:root.looks.indexOf(root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook)
-                        onActivated:index=>{root.pendingLook=root.looks[index];if(root.currentDrop)root.send({type:"style",id:root.currentDrop.id,appearance:root.looks[index]})}
+                    visible:root.blobIds.length>1
+                    Repeater {
+                        model:root.blobIds
+                        delegate: Rectangle {
+                            id:dropPill
+                            required property string modelData
+                            required property int index
+                            property var blob:root.state.blobs.find(b=>b.id===modelData) || null
+                            Layout.fillWidth:true;implicitHeight:28;radius:8
+                            color:root.selectedId===modelData ? root.accentTint(0.15) : root.inkTint(0.03)
+                            border.width:1
+                            border.color:root.selectedId===modelData ? root.accentTint(0.45) : root.inkTint(0.08)
+                            Behavior on color {ColorAnimation{duration:110}}
+                            Row {
+                                anchors.centerIn:parent;spacing:5
+                                Rectangle {width:8;height:8;radius:4;color:root.lookTint(root.dropLook(dropPill.blob));anchors.verticalCenter:parent.verticalCenter}
+                                Text {
+                                    text:"Drop "+(index+1)
+                                    color:root.selectedId===dropPill.modelData ? root.accent : root.muted
+                                    font.pixelSize:9;font.bold:root.selectedId===dropPill.modelData
+                                    anchors.verticalCenter:parent.verticalCenter
+                                }
+                            }
+                            Accessible.role:Accessible.Button
+                            Accessible.name:"Select Drop "+(index+1)
+                            MouseArea {anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:{root.selectedId=dropPill.modelData;root.chatOpen=false}}
+                        }
                     }
-                    Button {id:newDropButton;Accessible.name:"New drop";text:"+";ToolTip.visible:hovered;ToolTip.text:"New drop";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:root.blobIds.length<3;onClicked:{root.chatOpen=false;root.send({type:"create",appearance:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook})}}
-                    Button {id:deleteDropButton;Accessible.name:"Delete drop";text:"−";ToolTip.visible:hovered;ToolTip.text:"Delete selected drop and conversation";Layout.preferredWidth:30;Layout.preferredHeight:28;enabled:!!root.currentDrop;onClicked:root.send({type:"remove",id:root.currentDrop.id})}
-                    ToolButton {text:"⚙";ToolTip.visible:hovered;ToolTip.text:"Model connection";Layout.preferredWidth:28;Layout.preferredHeight:28;onClicked:root.openSettings()}
                 }
-                Switch {
-                    id:livelyToggle
-                    Accessible.name:"Lively Drops"
-                    text:"Lively Drops";font.pixelSize:11;palette.windowText:root.ink
-                    Layout.fillWidth:true;Layout.preferredHeight:30
-                    checked:root.lively;enabled:root.connected
-                    onToggled:root.send({type:"lively",enabled:checked})
-                    ToolTip.visible:hovered
-                    ToolTip.text:"Gentle motion, expressive faces and status badges. Turn off for quiet mode."
+                PanelCard {
+                    Layout.fillWidth:true
+                    RowLayout {
+                        Layout.fillWidth:true;spacing:13
+                        Item {
+                            Layout.preferredWidth:76;Layout.preferredHeight:76
+                            Rectangle {anchors.centerIn:parent;width:76;height:76;radius:38;color:"transparent";border.width:1;border.color:root.accentTint(0.13)}
+                            Rectangle {anchors.centerIn:parent;width:66;height:66;radius:33;color:root.accentTint(0.05)}
+                            DropFace {
+                                anchors.centerIn:parent;width:58;height:56
+                                look:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook
+                                mood:root.currentDrop ? root.currentDrop.state : "idle"
+                                hovered:panelAvatar.containsMouse
+                                opacity:!root.currentDrop ? 0.45 : root.dragging && root.dragId===root.currentDrop.id ? 0 : 1
+                                Behavior on opacity {NumberAnimation{duration:70}}
+                                DragArea {id:panelAvatar;enabled:!!root.currentDrop;blobId:root.currentDrop ? root.currentDrop.id : ""}
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth:true;spacing:3
+                            SectionLabel {
+                                text:root.currentDrop ? "Drop "+root.dropNumber(root.currentDrop)+" · "+root.lookName(root.dropLook(root.currentDrop)) : "No drop yet"
+                            }
+                            Label {
+                                Layout.fillWidth:true;elide:Text.ElideRight
+                                text:root.currentDrop ? root.shortLabel(root.currentDrop) : "Make your first drop"
+                                color:root.ink;font.pixelSize:14;font.bold:true
+                                MouseArea {anchors.fill:parent;enabled:!!root.selected;cursorShape:Qt.PointingHandCursor;onClicked:root.inspectContext()}
+                            }
+                            RowLayout {
+                                Layout.fillWidth:true;spacing:5
+                                Rectangle {width:5;height:5;radius:2.5;color:root.connectionColor();Layout.alignment:Qt.AlignVCenter}
+                                Label {Layout.fillWidth:true;elide:Text.ElideRight;text:root.heroStatus(root.currentDrop);color:root.muted;font.pixelSize:10}
+                            }
+                            Label {
+                                Layout.fillWidth:true;wrapMode:Text.Wrap;maximumLineCount:2;elide:Text.ElideRight
+                                text:root.heroHint(root.currentDrop);color:root.muted;font.pixelSize:9;opacity:0.8
+                            }
+                        }
+                    }
+                    ActionButton {
+                        id:chatButton
+                        Layout.fillWidth:true;primary:true
+                        enabled:!!root.currentDrop && root.currentDrop.placement.anchor.kind!=="panel"
+                        text:!root.currentDrop ? "Make a drop to start" : enabled ? "Chat with this drop  →" : "Drag me onto a window"
+                        onClicked:root.openChat(root.currentDrop.id,true)
+                    }
                 }
-                Switch {
-                    id:sudoToggle
-                    Accessible.name:"Sudo mode"
-                    text:"Sudo mode · no prompts";font.pixelSize:11
-                    palette.windowText:root.sudo ? "#e5b96f" : root.ink
-                    Layout.fillWidth:true;Layout.preferredHeight:30
-                    checked:root.sudo;enabled:root.connected
-                    onToggled:root.send({type:"sudo",enabled:checked})
-                    ToolTip.visible:hovered
-                    ToolTip.text:"File edits, shell commands and web requests run without an approval prompt. Validation, workspace limits and backups still apply. Only enable this while you trust what this drop may do."
+                PanelCard {
+                    Layout.fillWidth:true
+                    RowLayout {
+                        Layout.fillWidth:true
+                        SectionLabel {text:"File access";Layout.fillWidth:true}
+                        ActionButton {
+                            id:directoryButton
+                            text:"Change";implicitHeight:24
+                            enabled:!!root.selected && !root.selectedBusy && root.connected
+                            Accessible.name:"Choose working directory"
+                            ToolTip.visible:hovered;ToolTip.text:"Choose this Drop's working directory"
+                            onClicked:root.openDirectory()
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth:true;spacing:9
+                        Item {
+                            Layout.preferredWidth:24;Layout.preferredHeight:24;Layout.alignment:Qt.AlignTop
+                            Rectangle {x:1;y:8;width:22;height:14;radius:4;color:root.accentTint(0.13);border.width:1;border.color:root.accentTint(0.35)}
+                            Rectangle {x:3;y:5;width:9;height:5;radius:2;color:root.accentTint(0.20)}
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth:true;spacing:2
+                            Label {
+                                Layout.fillWidth:true;elide:Text.ElideMiddle
+                                text:root.directoryLabel(root.selected)
+                                color:root.accent;font.pixelSize:11
+                                ToolTip.visible:directoryHover.containsMouse;ToolTip.text:text
+                                MouseArea {id:directoryHover;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:root.inspectContext()}
+                            }
+                            Label {
+                                Layout.fillWidth:true;wrapMode:Text.Wrap;maximumLineCount:2;elide:Text.ElideRight
+                                text:root.sudo ? "Edits run without prompts in this directory" : root.directoryHint(root.selected)
+                                color:root.muted;font.pixelSize:9
+                            }
+                        }
+                    }
                 }
-                Label {
-                    Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9;horizontalAlignment:Text.AlignHCenter
-                    text:root.currentDrop && root.currentDrop.placement.anchor.kind==="panel" ? "Drag me out, then click me to chat." : "Click a placed drop to talk right there."
+                Rectangle {
+                    Layout.fillWidth:true
+                    implicitHeight:evidenceRow.implicitHeight+12
+                    visible:root.appSummary(root.currentDrop).length>0
+                    radius:10
+                    color:root.accentTint(0.06)
+                    border.width:1;border.color:root.accentTint(0.14)
+                    RowLayout {
+                        id:evidenceRow
+                        anchors.fill:parent;anchors.leftMargin:10;anchors.rightMargin:6;spacing:8
+                        Rectangle {width:6;height:6;radius:3;color:root.accent;Layout.alignment:Qt.AlignVCenter}
+                        Label {
+                            Layout.fillWidth:true;elide:Text.ElideRight;textFormat:Text.PlainText
+                            text:root.appSummary(root.currentDrop).replace(/\n/g,"   ·   ")
+                            color:root.ink;font.pixelSize:10
+                            MouseArea {anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:root.inspectContext()}
+                        }
+                        ActionButton {text:"Inspect";implicitHeight:24;onClicked:root.inspectContext()}
+                    }
                 }
-                Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;wrapMode:Text.Wrap;color:"#f4a99a";font.pixelSize:10}
+                PanelCard {
+                    Layout.fillWidth:true
+                    RowLayout {
+                        Layout.fillWidth:true
+                        SectionLabel {text:"Appearance";Layout.fillWidth:true}
+                        Label {
+                            text:root.lookName(root.currentDrop ? root.dropLook(root.currentDrop) : root.pendingLook)
+                            color:root.accent;font.pixelSize:9;font.letterSpacing:1
+                            font.capitalization:Font.AllUppercase
+                        }
+                    }
+                    Row {
+                        id:looksRow
+                        Layout.alignment:Qt.AlignHCenter
+                        spacing:3
+                        Repeater {
+                            id:lookRepeater
+                            model:root.looks
+                            delegate: LookChip {
+                                required property string modelData
+                                required property int index
+                                look:modelData
+                                selected:(root.currentDrop ? root.dropLook(root.currentDrop) : root.pendingLook)===modelData
+                                onPicked:root.chooseLook(index)
+                            }
+                        }
+                    }
+                }
+                PanelCard {
+                    Layout.fillWidth:true
+                    RowLayout {
+                        Layout.fillWidth:true;spacing:10
+                        ColumnLayout {
+                            Layout.fillWidth:true;spacing:1
+                            Label {text:"Lively drops";color:root.ink;font.pixelSize:11;font.bold:true}
+                            Label {
+                                Layout.fillWidth:true;wrapMode:Text.Wrap;maximumLineCount:2;elide:Text.ElideRight
+                                text:"Gentle motion and expressive faces."
+                                color:root.muted;font.pixelSize:9
+                            }
+                        }
+                        ThemeSwitch {
+                            id:livelyToggle
+                            Accessible.name:"Lively Drops"
+                            checked:root.lively;enabled:root.connected
+                            onToggled:root.send({type:"lively",enabled:checked})
+                            ToolTip.visible:hovered;ToolTip.text:"Gentle motion, expressive faces and status badges"
+                        }
+                    }
+                    Rectangle {Layout.fillWidth:true;height:1;color:root.inkTint(0.07)}
+                    RowLayout {
+                        Layout.fillWidth:true;spacing:10
+                        ColumnLayout {
+                            Layout.fillWidth:true;spacing:1
+                            Label {text:"Sudo mode";color:root.sudo ? "#e5b96f" : root.ink;font.pixelSize:11;font.bold:true}
+                            Label {
+                                Layout.fillWidth:true;wrapMode:Text.Wrap;maximumLineCount:2;elide:Text.ElideRight
+                                text:root.sudo ? "No prompts · boundaries and backups stay on." : "Ask before edits, shell commands and web requests."
+                                color:root.muted;font.pixelSize:9
+                            }
+                        }
+                        ThemeSwitch {
+                            id:sudoToggle
+                            Accessible.name:"Sudo mode"
+                            checked:root.sudo;enabled:root.connected
+                            onToggled:root.send({type:"sudo",enabled:checked})
+                            ToolTip.visible:hovered;ToolTip.text:"Validation, workspace limits and backups still apply"
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth:true;spacing:6
+                    ActionButton {
+                        id:newDropButton
+                        Layout.fillWidth:true
+                        text:"+  New drop"
+                        Accessible.name:"New drop"
+                        enabled:root.blobIds.length<3
+                        ToolTip.visible:hovered;ToolTip.text:root.blobIds.length>=3 ? "Three drops is the limit" : "Create another drop"
+                        onClicked:{root.chatOpen=false;root.send({type:"create",appearance:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook})}
+                    }
+                    IconButton {
+                        id:deleteDropButton
+                        text:"−"
+                        Accessible.name:"Delete drop"
+                        enabled:!!root.currentDrop
+                        ToolTip.visible:hovered;ToolTip.text:"Delete selected drop and conversation"
+                        onClicked:root.send({type:"remove",id:root.currentDrop.id})
+                    }
+                }
             }
             Dialog {
                 id:directoryView;objectName:"directory-view"
-                x:8;y:8;width:parent.width-16;modal:true;padding:12
+                x:8;y:8;width:parent.width-16;modal:true;padding:14
                 closePolicy:Popup.CloseOnPressOutside
-                title:"Working directory"
+                background:Rectangle {radius:16;color:root.background;border.width:1;border.color:root.accentTint(0.38)}
                 ColumnLayout {
-                    width:parent.width;spacing:8
-                    Label {Layout.fillWidth:true;text:"This Drop can read and edit files inside this directory. File changes keep their approval and backup protections.";wrapMode:Text.Wrap;color:root.ink;font.pixelSize:11}
-                    TextField {id:directoryPath;Layout.fillWidth:true;placeholderText:"/absolute/path/to/folder";Accessible.name:"Working directory path";selectByMouse:true}
-                    Button {text:"Browse…";onClicked:folderPicker.open()}
-                    Label {Layout.fillWidth:true;text:"Automatic follows the anchored app when its directory can be detected.";wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10}
+                    width:parent.width;spacing:9
                     RowLayout {
-                        Button {id:automaticDirectoryButton;text:"Automatic";onClicked:{root.send({type:"directory",id:root.directoryDropId,path:null});directoryView.close()}}
-                        Button {id:useDirectoryButton;text:"Use folder";enabled:directoryPath.text.trim().length>0;onClicked:{root.send({type:"directory",id:root.directoryDropId,path:directoryPath.text.trim()});directoryView.close()}}
+                        Layout.fillWidth:true
+                        ColumnLayout {
+                            Layout.fillWidth:true;spacing:1
+                            SectionLabel {text:"Working directory";Layout.fillWidth:true}
+                            Label {text:"File access";color:root.ink;font.pixelSize:14;font.bold:true}
+                        }
+                        IconButton {
+                            text:"×";Accessible.name:"Close working directory"
+                            onClicked:directoryView.close()
+                        }
                     }
-                    Button {text:"Cancel";onClicked:directoryView.close()}
+                    Label {
+                        Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10
+                        text:"This Drop can read and edit files inside one directory. File changes keep their approval and backup protections."
+                    }
+                    RowLayout {
+                        Layout.fillWidth:true;spacing:6
+                        FramedField {
+                            id:directoryPath;Layout.fillWidth:true
+                            placeholderText:"/absolute/path/to/folder"
+                            Accessible.name:"Working directory path"
+                        }
+                        ActionButton {text:"Browse…";onClicked:folderPicker.open()}
+                    }
+                    Label {
+                        Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9
+                        text:"Automatic follows the anchored app when its directory can be detected."
+                    }
+                    RowLayout {
+                        Layout.fillWidth:true;spacing:6
+                        ActionButton {
+                            id:automaticDirectoryButton
+                            Layout.fillWidth:true
+                            text:"Automatic"
+                            onClicked:{root.send({type:"directory",id:root.directoryDropId,path:null});directoryView.close()}
+                        }
+                        ActionButton {
+                            id:useDirectoryButton
+                            Layout.fillWidth:true;primary:true
+                            text:"Use folder"
+                            enabled:directoryPath.text.trim().length>0
+                            onClicked:{root.send({type:"directory",id:root.directoryDropId,path:directoryPath.text.trim()});directoryView.close()}
+                        }
+                    }
+                    ActionButton {
+                        Layout.fillWidth:true
+                        text:"Cancel"
+                        onClicked:directoryView.close()
+                    }
                 }
             }
             Dialogs.FolderDialog {
@@ -1250,61 +1667,97 @@ ShellRoot {
             ScrollView {
                 id:settingsScroll
                 visible:root.settingsOpen
-                anchors.fill:parent;anchors.margins:12
+                anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right;anchors.bottom:settingsFooter.top
+                anchors.margins:14;anchors.bottomMargin:8
                 contentWidth:availableWidth;clip:true
+                ScrollBar.vertical.policy:ScrollBar.AsNeeded
+                palette.window:root.background
+                palette.mid:root.inkTint(0.20)
                 ColumnLayout {
-                    width:settingsScroll.availableWidth;spacing:7
-                    RowLayout {
-                        Layout.fillWidth:true
-                        Label {text:"Model connection";color:root.ink;font.pixelSize:14;Layout.fillWidth:true}
-                        ToolButton {text:"×";palette.buttonText:root.muted;onClicked:root.settingsOpen=false}
+                    width:settingsScroll.availableWidth;spacing:9
+                    Item {
+                        Layout.fillWidth:true;implicitHeight:38
+                        Column {
+                            anchors.left:parent.left;anchors.verticalCenter:parent.verticalCenter
+                            spacing:0
+                            Label {text:"Model";color:root.ink;font.pixelSize:16;font.bold:true}
+                            Label {text:"Connection & capture";color:root.muted;font.pixelSize:10}
+                        }
+                        IconButton {
+                            anchors.right:parent.right;anchors.verticalCenter:parent.verticalCenter
+                            text:"×";Accessible.name:"Close settings"
+                            ToolTip.visible:hovered;ToolTip.text:"Close settings"
+                            onClicked:root.settingsOpen=false
+                        }
                     }
                     Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;color:"#f4a99a";font.pixelSize:10;wrapMode:Text.Wrap}
-                    Label {text:"Connection type";color:root.muted;font.pixelSize:10}
-                    ComboBox {
-                        id:connectionType
-                        Layout.fillWidth:true;Layout.preferredHeight:28;font.pixelSize:11
-                        model:["Custom endpoint","Opencode Go"]
-                        currentIndex:root.connectionMode==="opencode_go" ? 1 : 0
-                        onActivated:index=>root.selectConnectionMode(index)
-                    }
-                    ColumnLayout {
-                        Layout.fillWidth:true;spacing:6
-                        visible:root.connectionMode==="custom"
-                        Label {text:"Endpoint URL";color:root.muted;font.pixelSize:11}
-                        TextField {id:endpoint;Layout.fillWidth:true;placeholderText:"http://localhost:11434/v1";font.pixelSize:11;selectByMouse:true}
-                        Label {text:"Model name";color:root.muted;font.pixelSize:11}
-                        TextField {id:modelName;Layout.fillWidth:true;placeholderText:"Model served by your endpoint";font.pixelSize:11;selectByMouse:true}
-                        Label {text:"API-key environment variable (optional)";color:root.muted;font.pixelSize:10}
-                        TextField {id:keyEnv;Layout.fillWidth:true;placeholderText:"e.g. DROPS_API_KEY";font.pixelSize:11;selectByMouse:true}
-                    }
-                    ColumnLayout {
-                        Layout.fillWidth:true;spacing:6
-                        visible:root.connectionMode==="opencode_go"
-                        Label {text:"API key";color:root.muted;font.pixelSize:11}
-                        TextField {
-                            id:opencodeKey
-                            Layout.fillWidth:true;font.pixelSize:11;selectByMouse:true
-                            echoMode:TextInput.Password;placeholderText:"Paste your Opencode Go API key"
+                    PanelCard {
+                        Layout.fillWidth:true
+                        SectionLabel {text:"Provider";Layout.fillWidth:true}
+                        Rectangle {
+                            Layout.fillWidth:true;implicitHeight:34;radius:10
+                            color:root.inkTint(0.04);border.width:1;border.color:root.inkTint(0.10)
+                            RowLayout {
+                                anchors.fill:parent;anchors.margins:3;spacing:2
+                                SegmentButton {
+                                    id:customModeButton
+                                    Layout.fillWidth:true;text:"Custom endpoint"
+                                    selected:root.connectionMode==="custom"
+                                    onClicked:root.selectConnectionMode(0)
+                                }
+                                SegmentButton {
+                                    id:goModeButton
+                                    Layout.fillWidth:true;text:"Opencode Go"
+                                    selected:root.connectionMode==="opencode_go"
+                                    onClicked:root.selectConnectionMode(1)
+                                }
+                            }
                         }
                         Label {
                             Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9
-                            text:"The key is stored only in Drops' config file (mode 0600). Set OPENCODE_API_KEY instead if you prefer the environment."
+                            text:root.connectionMode==="opencode_go" ? "Use an Opencode Go key and pick from the gateway's model list." : "Point Drops at any OpenAI-compatible endpoint."
+                        }
+                    }
+                    PanelCard {
+                        Layout.fillWidth:true
+                        visible:root.connectionMode==="custom"
+                        SectionLabel {text:"Custom endpoint";Layout.fillWidth:true}
+                        Label {text:"Endpoint URL";color:root.muted;font.pixelSize:10}
+                        FramedField {id:endpoint;Layout.fillWidth:true;placeholderText:"http://localhost:11434/v1"}
+                        Label {text:"Model name";color:root.muted;font.pixelSize:10}
+                        FramedField {id:modelName;Layout.fillWidth:true;placeholderText:"Model served by your endpoint"}
+                        Label {text:"API-key environment variable · optional";color:root.muted;font.pixelSize:10}
+                        FramedField {id:keyEnv;Layout.fillWidth:true;placeholderText:"e.g. DROPS_API_KEY"}
+                    }
+                    PanelCard {
+                        Layout.fillWidth:true
+                        visible:root.connectionMode==="opencode_go"
+                        SectionLabel {text:"Opencode Go";Layout.fillWidth:true}
+                        Label {text:"API key";color:root.muted;font.pixelSize:10}
+                        FramedField {
+                            id:opencodeKey
+                            Layout.fillWidth:true
+                            echoMode:TextInput.Password
+                            placeholderText:"Paste your Opencode Go API key"
+                        }
+                        Label {
+                            Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9
+                            text:"Stored only in Drops' config file (mode 0600). Set OPENCODE_API_KEY instead if you prefer the environment."
                         }
                         RowLayout {
                             Layout.fillWidth:true;spacing:6
-                            Label {text:"Model";color:root.muted;font.pixelSize:11;Layout.fillWidth:true}
-                            Button {
+                            Label {text:"Model";color:root.muted;font.pixelSize:10;Layout.fillWidth:true}
+                            ActionButton {
                                 id:loadModelsButton
                                 text:root.loadingModels ? "Loading…" : "Load models"
-                                font.pixelSize:10;Layout.preferredHeight:26
+                                implicitHeight:26
                                 enabled:root.connected && !root.loadingModels && root.opencodeHasKey()
                                 onClicked:root.loadModels()
                             }
                         }
                         ComboBox {
                             id:opencodeModel
-                            Layout.fillWidth:true;Layout.preferredHeight:28;font.pixelSize:11
+                            Layout.fillWidth:true;Layout.preferredHeight:34;font.pixelSize:11
                             model:root.opencodeModels
                             editable:true
                             enabled:!root.loadingModels
@@ -1314,77 +1767,211 @@ ShellRoot {
                                 const value=String(editText).trim()
                                 if(value!==root.opencodeSelected)root.opencodeSelected=value
                             }
+                            palette.text:root.ink
+                            palette.buttonText:root.ink
+                            palette.button:Qt.lighter(root.background,1.08)
+                            palette.base:Qt.lighter(root.background,1.08)
+                            palette.window:root.background
+                            palette.dark:root.muted
+                            palette.highlight:root.accentTint(0.25)
+                            palette.highlightedText:root.ink
+                            background:Rectangle {
+                                implicitHeight:34;radius:8
+                                color:root.inkTint(0.045)
+                                border.width:1
+                                border.color:opencodeModel.visualFocus ? root.accentTint(0.65) : root.inkTint(0.12)
+                            }
                         }
                     }
-                    CheckBox {id:contentCapture;text:"Read attached window content";palette.windowText:root.ink;font.pixelSize:11}
-                    CheckBox {id:screenCapture;text:"Use screenshots / OCR fallback";palette.windowText:root.ink;font.pixelSize:11;enabled:contentCapture.checked}
-                    CheckBox {id:visionMode;text:"Model supports images";palette.windowText:root.ink;font.pixelSize:11}
-                    Button {
-                        id:saveConnectionButton
-                        text:"Save connection"
+                    PanelCard {
                         Layout.fillWidth:true
-                        enabled:root.connectionMode==="opencode_go" ? (root.opencodeSelected.length>0 && root.opencodeHasKey()) : (endpoint.text.trim().length>0 && modelName.text.trim().length>0)
-                        onClicked:root.saveConnection()
+                        SectionLabel {text:"Capture";Layout.fillWidth:true}
+                        ThemedCheck {
+                            id:contentCapture
+                            Layout.fillWidth:true
+                            text:"Read attached window content"
+                        }
+                        Label {
+                            Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9
+                            text:"Accessibility text and selections from the anchored window."
+                        }
+                        ThemedCheck {
+                            id:screenCapture
+                            Layout.fillWidth:true
+                            text:"Screenshots / OCR fallback"
+                            enabled:contentCapture.checked
+                            opacity:enabled ? 1 : 0.45
+                        }
+                        ThemedCheck {
+                            id:visionMode
+                            Layout.fillWidth:true
+                            text:"Model supports images"
+                        }
                     }
+                }
+            }
+            ColumnLayout {
+                id:settingsFooter
+                visible:root.settingsOpen
+                anchors.left:parent.left;anchors.right:parent.right;anchors.bottom:parent.bottom
+                anchors.margins:14
+                spacing:6
+                Rectangle {Layout.fillWidth:true;height:1;color:root.inkTint(0.08)}
+                ActionButton {
+                    id:saveConnectionButton
+                    Layout.fillWidth:true;primary:true
+                    text:"Save connection"
+                    enabled:root.connectionMode==="opencode_go" ? (root.opencodeSelected.length>0 && root.opencodeHasKey()) : (endpoint.text.trim().length>0 && modelName.text.trim().length>0)
+                    onClicked:root.saveConnection()
+                }
+                Label {
+                    Layout.fillWidth:true;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9
+                    horizontalAlignment:Text.AlignHCenter
+                    text:"Keys stay local · file edits still ask for approval"
                 }
             }
             Popup {
                 id:contextView;objectName:"context-view";x:8;y:8;width:parent.width-16;height:parent.height-16;modal:true;padding:0
                 closePolicy:Popup.CloseOnPressOutside
-                background:Rectangle {color:root.background;radius:12;border.color:root.accent}
+                background:Rectangle {color:root.background;radius:16;border.width:1;border.color:root.accentTint(0.40)}
                 contentItem:ColumnLayout {
                     spacing:0
                     RowLayout {
-                        Layout.fillWidth:true;Layout.margins:10;Layout.bottomMargin:4;spacing:4
-                        Label {text:"What this Drop sees";font.pixelSize:15;color:root.ink;Layout.fillWidth:true}
-                        ToolButton {
+                        Layout.fillWidth:true;Layout.margins:14;Layout.bottomMargin:6;spacing:8
+                        ColumnLayout {
+                            Layout.fillWidth:true;spacing:0
+                            SectionLabel {text:"Context";Layout.fillWidth:true}
+                            Label {text:"What this Drop sees";font.pixelSize:14;font.bold:true;color:root.ink}
+                        }
+                        IconButton {
                             id:contextCloseButton;objectName:"context-close"
-                            text:"×";font.pixelSize:13;palette.buttonText:root.muted
+                            text:"×"
                             Accessible.name:"Close context details"
                             ToolTip.visible:hovered;ToolTip.text:"Close"
                             onClicked:contextView.close()
                         }
                     }
+                    Rectangle {Layout.fillWidth:true;height:1;Layout.leftMargin:14;Layout.rightMargin:14;color:root.inkTint(0.08)}
                     ScrollView {
                         id:contextScroll
                         Layout.fillWidth:true;Layout.fillHeight:true
-                        Layout.leftMargin:10;Layout.rightMargin:10;Layout.bottomMargin:10
+                        Layout.leftMargin:14;Layout.rightMargin:14;Layout.bottomMargin:14;Layout.topMargin:10
                         contentWidth:availableWidth;clip:true
+                        ScrollBar.vertical.policy:ScrollBar.AsNeeded
+                        palette.window:root.background
+                        palette.mid:root.inkTint(0.20)
                         Column {
-                            width:contextScroll.availableWidth;spacing:8
-                            Label {width:parent.width;text:root.inspectedContext && root.inspectedContext.app_context && root.inspectedContext.app_context.status==="disabled" ? "Window content capture is off." : "Refreshed when opened or sent. Missing selections and paths are never guessed.";wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10}
-                            TextArea {width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.accent;text:root.inspectedContext && root.inspectedContext.tool_workspace ? "File access: "+root.inspectedContext.tool_workspace.root : "File access: not detected"}
-                            Repeater {
-                                model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.documents || [] : []
-                                delegate:TextArea {
-                                    required property var modelData
-                                    width:contextScroll.availableWidth;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink
-                                    text:(modelData.title || "Page / document")+"\n"+modelData.uri
+                            width:contextScroll.availableWidth;spacing:9
+                            Label {
+                                width:parent.width;wrapMode:Text.Wrap;color:root.muted;font.pixelSize:9
+                                text:root.inspectedContext && root.inspectedContext.app_context && root.inspectedContext.app_context.status==="disabled"
+                                    ? "Window content capture is off."
+                                    : "Refreshed when opened or sent. Missing selections and paths are never guessed."
+                            }
+                            PanelCard {
+                                width:parent.width
+                                SectionLabel {text:"File access";Layout.fillWidth:true}
+                                ContextBlock {
+                                    Layout.fillWidth:true
+                                    color:root.accent
+                                    text:root.inspectedContext && root.inspectedContext.tool_workspace ? root.inspectedContext.tool_workspace.root : "Not detected"
                                 }
                             }
-                            Repeater {
-                                model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selections || [] : []
-                                delegate:TextArea {
-                                    required property var modelData
-                                    width:contextScroll.availableWidth;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink
-                                    text:"Highlighted text"+(modelData.truncated ? " (partial)" : "")+"\n"+modelData.text
+                            PanelCard {
+                                width:parent.width
+                                visible:root.inspectedContext && root.inspectedContext.app_context && (root.inspectedContext.app_context.documents || []).length>0
+                                SectionLabel {text:"Page & documents";Layout.fillWidth:true}
+                                Column {
+                                    Layout.fillWidth:true
+                                    spacing:6
+                                    Repeater {
+                                        model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.documents || [] : []
+                                        delegate: ContextBlock {
+                                            required property var modelData
+                                            width:parent.width
+                                            text:(modelData.title || "Page / document")+"\n"+modelData.uri
+                                        }
+                                    }
                                 }
                             }
-                            Repeater {
-                                model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selected_items || [] : []
-                                delegate:Label {
-                                    required property var modelData
-                                    width:contextScroll.availableWidth;wrapMode:Text.Wrap;textFormat:Text.PlainText;color:root.ink
-                                    text:modelData.name+"\n"+(modelData.path || (modelData.path_verified ? "Outside this Drop's file access" : "File path not verified"))
+                            PanelCard {
+                                width:parent.width
+                                visible:root.inspectedContext && root.inspectedContext.app_context && (root.inspectedContext.app_context.selections || []).length>0
+                                SectionLabel {text:"Highlighted text";Layout.fillWidth:true}
+                                Column {
+                                    Layout.fillWidth:true
+                                    spacing:6
+                                    Repeater {
+                                        model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selections || [] : []
+                                        delegate: Rectangle {
+                                            required property var modelData
+                                            width:parent.width;implicitHeight:selectionBody.implicitHeight+18
+                                            radius:9;color:root.accentTint(0.07)
+                                            border.width:1;border.color:root.accentTint(0.16)
+                                            Rectangle {x:0;y:8;width:2;height:parent.height-16;radius:1;color:root.accent}
+                                            Column {
+                                                id:selectionBody
+                                                x:10;y:8;width:parent.width-20;spacing:3
+                                                Label {
+                                                    visible:modelData.truncated
+                                                    text:"Partial selection"
+                                                    color:root.accent;font.pixelSize:9;font.bold:true
+                                                }
+                                                Label {
+                                                    width:parent.width;wrapMode:Text.Wrap;textFormat:Text.PlainText
+                                                    text:modelData.text;color:root.ink;font.pixelSize:10
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                            Image {
-                                width:parent.width;height:visible ? Math.min(200,sourceSize.height*(width/Math.max(1,sourceSize.width))) : 0
-                                fillMode:Image.PreserveAspectFit;visible:!!source
-                                source:root.inspectedContext && root.inspectedContext.content && root.inspectedContext.content.image ? root.inspectedContext.content.image.data_url || "" : ""
+                            PanelCard {
+                                width:parent.width
+                                visible:root.inspectedContext && root.inspectedContext.app_context && (root.inspectedContext.app_context.selected_items || []).length>0
+                                SectionLabel {text:"Selected files";Layout.fillWidth:true}
+                                Column {
+                                    Layout.fillWidth:true
+                                    spacing:6
+                                    Repeater {
+                                        model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selected_items || [] : []
+                                        delegate: ContextBlock {
+                                            required property var modelData
+                                            width:parent.width
+                                            text:modelData.name+"\n"+(modelData.path || (modelData.path_verified ? "Outside this Drop's file access" : "File path not verified"))
+                                        }
+                                    }
+                                }
                             }
-                            CheckBox {id:technicalContext;text:"Show technical details";palette.windowText:root.muted}
-                            TextArea {visible:technicalContext.checked;width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink;text:root.contextMetadata(root.inspectedContext)}
+                            Rectangle {
+                                id:imageWrap
+                                property string source:root.inspectedContext && root.inspectedContext.content && root.inspectedContext.content.image ? root.inspectedContext.content.image.data_url || "" : ""
+                                width:parent.width
+                                height:source.length>0 ? Math.min(220,contextImage.sourceSize.height*(width/Math.max(1,contextImage.sourceSize.width)))+2 : 0
+                                visible:source.length>0
+                                radius:10;clip:true
+                                color:root.inkTint(0.04)
+                                border.width:1;border.color:root.inkTint(0.08)
+                                Image {
+                                    id:contextImage
+                                    anchors.fill:parent;anchors.margins:1
+                                    fillMode:Image.PreserveAspectFit
+                                    source:imageWrap.source
+                                }
+                            }
+                            PanelCard {
+                                width:parent.width
+                                ThemedCheck {
+                                    id:technicalContext
+                                    Layout.fillWidth:true
+                                    text:"Show technical details"
+                                }
+                                ContextBlock {
+                                    visible:technicalContext.checked
+                                    Layout.fillWidth:true
+                                    text:root.contextMetadata(root.inspectedContext)
+                                }
+                            }
                         }
                     }
                 }

@@ -22,7 +22,7 @@ source = source.replace('objectName:"approval-details-"+(bubble.blob ? bubble.bl
 source = source.replace("id:placed", 'id:placed; Component.onCompleted: console.log("TEST_BLOB_CREATED")')
 source = source.replace("required property var entry", 'Component.onCompleted: console.log("TEST_CHAT_CREATED"); required property var entry')
 source = source.replace("id: root", 'id: root\nTimer { interval: 50; running: true; repeat: true; property int ticks:0; onTriggered: { if(ticks++<10) { let s=JSON.parse(JSON.stringify(root.state));s.blobs[0].history[1].text+=".";root.state=s;root.syncChat() } else stop() } }\n',1)
-source=source.replace("id: root", 'id: root\nTimer {interval:100;running:true;onTriggered:{root.inspectContext();console.log("TEST_APP_SUMMARY",root.appSummary(root.selected));console.log("TEST_APP_ACTION",root.suggestionsFor(root.selected)[0].label);console.log("TEST_CONTEXT_OPEN",contextView.opened,!technicalContext.checked,contextScroll.height,contextCloseButton.visible)}}\n',1)
+source=source.replace("id: root", 'id: root\nTimer {interval:250;running:true;onTriggered:{root.inspectContext();contextLogTimer.start()}}\nTimer {id:contextLogTimer;interval:120;onTriggered:{console.log("TEST_APP_SUMMARY",root.appSummary(root.selected));console.log("TEST_APP_ACTION",root.suggestionsFor(root.selected)[0].label);console.log("TEST_CONTEXT_OPEN",contextView.opened,!technicalContext.checked,contextScroll.height,contextCloseButton.visible)}}\n',1)
 
 with tempfile.TemporaryDirectory(prefix="drops-qml-") as directory:
     path = pathlib.Path(directory) / "shell.qml"
