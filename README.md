@@ -21,7 +21,7 @@ This installs Drops under `~/.local` and enables a small native widget in the Om
 - **⚙ Model connection** offers two choices. **Custom endpoint** (the default) keeps the original bring-your-own OpenAI-compatible setup: paste the endpoint URL, enter the model name and, optionally, the name of an environment variable that holds the key. **Opencode Go** asks for an Opencode Go API key, loads the gateway's model list, and lets you pick a model. Each drop sends its own stable session id, as the gateway recommends for routing and prompt caching. A missing config is supported for first-run setup.
 - **Sudo mode** runs mutating and dangerous tools without a per-call approval prompt. Validation, workspace confinement, diff previews and backups still apply, and shell access still depends on the anchored window. It starts off, is saved across restarts, and its switch turns amber while enabled.
 
-Click a placed drop to open its in-place chat bubble. It greets the anchored window, offers contextual quick actions, and grows into a scrollable conversation. Sending collapses the bubble; the reply returns as a short, truncated bubble above the drop, and clicking it or the drop reopens the full conversation. Idle drops shrink to colored dots. Click the anchor label to inspect context; Enter sends, Escape closes, and the stop icon cancels the current turn. `buddyctl cancel` stops all turns.
+Click a placed drop to open its in-place chat bubble. It greets the anchored window, offers contextual quick actions, and grows into a scrollable conversation. Sending collapses the bubble; the reply returns as a short, truncated bubble above the drop, and clicking it or the drop reopens the full conversation. Idle drops shrink to colored dots. Click the anchor label to inspect context; Enter sends, Escape closes, and the stop icon cancels the current turn. The context inspector closes with its **×** button or Escape, and hiding the panel closes it too. `buddyctl cancel` stops all turns.
 
 Reasoning from thinking models streams into one compact, scrollable block instead of the chat itself: it starts collapsed with a word count, expands on click, and can be hidden or shown expanded by default with `[appearance].thinking_mode` (`"collapsed"`, `"hidden"`, or `"shown"`).
 
@@ -127,6 +127,7 @@ python3 tests/widget-smoke.py
 python3 -m unittest discover -s tests/text_capture -p test_workspace_probe.py -v
 PYTHONPATH=tests/text_capture python3 -m unittest test_app_context
 python3 tests/qml-interactions.py
+python3 tests/qml-context-inspector.py
 python3 tests/sudo-smoke.py
 python3 tests/qml-opencode-settings.py
 python3 tests/lively-smoke.py

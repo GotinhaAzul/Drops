@@ -84,8 +84,19 @@ ShellRoot {
     readonly property bool sudo: state.sudo === true
     property bool capturing: state.blobs.some(b=>b.state==="capturing")
     property var inspectedContext: null
+    // Close the readable panels before another one opens or the shell hides,
+    // so a modal popup can never outlive its panel or block the UI.
+    function dismissOverlays() {
+        let dismissed=false
+        if(contextView.opened){contextView.close();dismissed=true}
+        if(directoryView.opened){directoryView.close();dismissed=true}
+        if(folderPicker.visible){folderPicker.close();dismissed=true}
+        return dismissed
+    }
     function inspectContext() {
         inspectedContext=selected ? selected.context : null
+        directoryView.close()
+        folderPicker.close()
         if(!state.panel_open)send({type:"toggle"})
         contextView.open()
         if(selected)send({type:"context",id:selectedId})
@@ -96,6 +107,8 @@ ShellRoot {
         directoryDropId=selected.id
         directoryPath.text=selected.directory || (selected.context && selected.context.tool_workspace && selected.context.tool_workspace.root) || ""
         failure=""
+        contextView.close()
+        folderPicker.close()
         if (!state.panel_open) send({type:"toggle"})
         directoryView.open()
     }
@@ -137,7 +150,7 @@ ShellRoot {
         return pieces.join("\n")
     }
     function openSettings() {
-        loadSettings();settingsOpen=true;failure=""
+        dismissOverlays();loadSettings();settingsOpen=true;failure=""
         if(!state.panel_open)send({type:"toggle"})
     }
     readonly property bool lively: state.lively === true
@@ -700,7 +713,7 @@ ShellRoot {
         color:"transparent"; exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-chat"
         WlrLayershell.keyboardFocus: bubble.active ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
-        Shortcut {sequence:"Escape";enabled:bubble.active;onActivated:root.closeChat()}
+        Shortcut {sequence:"Escape";enabled:bubble.active;onActivated:{if(!root.dismissOverlays())root.closeChat()}}
         Timer {
             interval:300;repeat:true;running:bubble.visible && bubble.busy
             onTriggered:bubble.dotPhase=(bubble.dotPhase+1)%3
@@ -1066,7 +1079,16 @@ ShellRoot {
         color:"transparent";exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-panel"
         WlrLayershell.keyboardFocus:WlrKeyboardFocus.OnDemand
-        Shortcut {sequence:"Escape";enabled:panel.visible && !root.chatOpen;onActivated:root.send({type:"toggle"})}
+        Shortcut {
+            id:escapeShortcut
+            sequence:"Escape";enabled:panel.visible && !folderPicker.visible
+            onActivated:{
+                if(root.dismissOverlays())return
+                if(root.chatOpen){root.closeChat();return}
+                root.send({type:"toggle"})
+            }
+        }
+        onVisibleChanged: if(!visible) root.dismissOverlays()
         Rectangle {
             anchors.fill:parent;color:root.background;radius:18;border.color:"#4b5545";border.width:1
             ColumnLayout {
@@ -1203,8 +1225,9 @@ ShellRoot {
                 Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;wrapMode:Text.Wrap;color:"#f4a99a";font.pixelSize:10}
             }
             Dialog {
-                id:directoryView
+                id:directoryView;objectName:"directory-view"
                 x:8;y:8;width:parent.width-16;modal:true;padding:12
+                closePolicy:Popup.CloseOnPressOutside
                 title:"Working directory"
                 ColumnLayout {
                     width:parent.width;spacing:8
@@ -1306,46 +1329,63 @@ ShellRoot {
                 }
             }
             Popup {
-                id:contextView;x:8;y:8;width:parent.width-16;height:parent.height-16;modal:true;padding:10
+                id:contextView;objectName:"context-view";x:8;y:8;width:parent.width-16;height:parent.height-16;modal:true;padding:0
+                closePolicy:Popup.CloseOnPressOutside
                 background:Rectangle {color:root.background;radius:12;border.color:root.accent}
-                ScrollView {
-                    id:contextScroll;anchors.fill:parent;contentWidth:availableWidth;clip:true
-                    Column {
-                        width:contextScroll.availableWidth;spacing:8
-                        Label {text:"What this Drop sees";font.pixelSize:15;color:root.ink}
-                        Label {width:parent.width;text:root.inspectedContext && root.inspectedContext.app_context && root.inspectedContext.app_context.status==="disabled" ? "Window content capture is off." : "Refreshed when opened or sent. Missing selections and paths are never guessed.";wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10}
-                        TextArea {width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.accent;text:root.inspectedContext && root.inspectedContext.tool_workspace ? "File access: "+root.inspectedContext.tool_workspace.root : "File access: not detected"}
-                        Repeater {
-                            model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.documents || [] : []
-                            delegate:TextArea {
-                                required property var modelData
-                                width:contextScroll.availableWidth;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink
-                                text:(modelData.title || "Page / document")+"\n"+modelData.uri
+                contentItem:ColumnLayout {
+                    spacing:0
+                    RowLayout {
+                        Layout.fillWidth:true;Layout.margins:10;Layout.bottomMargin:4;spacing:4
+                        Label {text:"What this Drop sees";font.pixelSize:15;color:root.ink;Layout.fillWidth:true}
+                        ToolButton {
+                            id:contextCloseButton;objectName:"context-close"
+                            text:"×";font.pixelSize:13;palette.buttonText:root.muted
+                            Accessible.name:"Close context details"
+                            ToolTip.visible:hovered;ToolTip.text:"Close"
+                            onClicked:contextView.close()
+                        }
+                    }
+                    ScrollView {
+                        id:contextScroll
+                        Layout.fillWidth:true;Layout.fillHeight:true
+                        Layout.leftMargin:10;Layout.rightMargin:10;Layout.bottomMargin:10
+                        contentWidth:availableWidth;clip:true
+                        Column {
+                            width:contextScroll.availableWidth;spacing:8
+                            Label {width:parent.width;text:root.inspectedContext && root.inspectedContext.app_context && root.inspectedContext.app_context.status==="disabled" ? "Window content capture is off." : "Refreshed when opened or sent. Missing selections and paths are never guessed.";wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10}
+                            TextArea {width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.accent;text:root.inspectedContext && root.inspectedContext.tool_workspace ? "File access: "+root.inspectedContext.tool_workspace.root : "File access: not detected"}
+                            Repeater {
+                                model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.documents || [] : []
+                                delegate:TextArea {
+                                    required property var modelData
+                                    width:contextScroll.availableWidth;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink
+                                    text:(modelData.title || "Page / document")+"\n"+modelData.uri
+                                }
                             }
-                        }
-                        Repeater {
-                            model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selections || [] : []
-                            delegate:TextArea {
-                                required property var modelData
-                                width:contextScroll.availableWidth;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink
-                                text:"Highlighted text"+(modelData.truncated ? " (partial)" : "")+"\n"+modelData.text
+                            Repeater {
+                                model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selections || [] : []
+                                delegate:TextArea {
+                                    required property var modelData
+                                    width:contextScroll.availableWidth;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink
+                                    text:"Highlighted text"+(modelData.truncated ? " (partial)" : "")+"\n"+modelData.text
+                                }
                             }
-                        }
-                        Repeater {
-                            model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selected_items || [] : []
-                            delegate:Label {
-                                required property var modelData
-                                width:contextScroll.availableWidth;wrapMode:Text.Wrap;textFormat:Text.PlainText;color:root.ink
-                                text:modelData.name+"\n"+(modelData.path || (modelData.path_verified ? "Outside this Drop's file access" : "File path not verified"))
+                            Repeater {
+                                model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selected_items || [] : []
+                                delegate:Label {
+                                    required property var modelData
+                                    width:contextScroll.availableWidth;wrapMode:Text.Wrap;textFormat:Text.PlainText;color:root.ink
+                                    text:modelData.name+"\n"+(modelData.path || (modelData.path_verified ? "Outside this Drop's file access" : "File path not verified"))
+                                }
                             }
+                            Image {
+                                width:parent.width;height:visible ? Math.min(200,sourceSize.height*(width/Math.max(1,sourceSize.width))) : 0
+                                fillMode:Image.PreserveAspectFit;visible:!!source
+                                source:root.inspectedContext && root.inspectedContext.content && root.inspectedContext.content.image ? root.inspectedContext.content.image.data_url || "" : ""
+                            }
+                            CheckBox {id:technicalContext;text:"Show technical details";palette.windowText:root.muted}
+                            TextArea {visible:technicalContext.checked;width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink;text:root.contextMetadata(root.inspectedContext)}
                         }
-                        Image {
-                            width:parent.width;height:visible ? Math.min(200,sourceSize.height*(width/Math.max(1,sourceSize.width))) : 0
-                            fillMode:Image.PreserveAspectFit;visible:!!source
-                            source:root.inspectedContext && root.inspectedContext.content && root.inspectedContext.content.image ? root.inspectedContext.content.image.data_url || "" : ""
-                        }
-                        CheckBox {id:technicalContext;text:"Show technical details";palette.windowText:root.muted}
-                        TextArea {visible:technicalContext.checked;width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink;text:root.contextMetadata(root.inspectedContext)}
                     }
                 }
             }
