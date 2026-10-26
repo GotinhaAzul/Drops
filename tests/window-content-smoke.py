@@ -23,6 +23,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "target/debug"
 
 requests = []
+APP_CONTEXT = {"documents":[{"uri":"https://example.com/article?token=redact-me#private","title":"Fixture article","depth":1}],
+               "selections":[{"text":"Selected fixture sentence","start":4,"end":29}],"selected_items":[]}
 
 
 class Endpoint(http.server.BaseHTTPRequestHandler):
@@ -44,6 +46,8 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                 and "Context for this request" in m["content"]
             )
             assert "preview alpha" in context, context
+            assert "Selected fixture sentence" in context, context
+            assert "https://example.com/article" in context and "redact-me" not in context, context
             assert '"status": "on-demand"' in context, context
             assert '"tool": "window_content"' in context, context
             delta = {
@@ -182,19 +186,17 @@ def main():
 
             capture = base / "mock-capture-python"
             capture_counter = base / "capture-calls.txt"
-            capture.write_text(
-                "#!/bin/sh\n"
-                f'printf \'x\\n\' >> "{capture_counter}"\n'
-                "input=$(cat)\n"
-                'case "$input" in\n'
-                "  *'\"max_nodes\":50000'*)\n"
-                '    printf \'%s\\n\' \'{"sources":[{"kind":"accessibility","scope":"matched-window","text":"full page alpha unique-needle omega"}],"warnings":[]}\'\n'
-                "    ;;\n"
-                "  *)\n"
-                '    printf \'%s\\n\' \'{"sources":[{"kind":"accessibility","scope":"matched-window","text":"preview alpha"}],"warnings":[]}\'\n'
-                "    ;;\n"
-                "esac\n"
-            )
+            capture.write_text(f'''#!{sys.executable}
+import json,sys,pathlib
+context=json.loads(sys.stdin.readline())
+metadata={APP_CONTEXT!r}
+sources=[]
+if not context.get("app_probe"):
+ with pathlib.Path({str(capture_counter)!r}).open("a") as output:output.write("capture\\n")
+ text="full page alpha unique-needle omega" if context.get("capture_options",{{}}).get("max_nodes")==50000 else "preview alpha"
+ sources=[{{"kind":"accessibility","scope":"matched-window","text":text}}]
+print(json.dumps({{"sources":sources,"warnings":[],"app_context":metadata}}))
+''')
             capture.chmod(0o755)
 
             control = socket.socket(socket.AF_UNIX)
@@ -286,6 +288,8 @@ def main():
                 state = ctl("status")["state"]
                 assert state["blobs"][0]["state"] == "idle", json.dumps(state)
                 assert state["blobs"][0]["context"]["content"]["text"] == "preview alpha"
+                assert state["blobs"][0]["context"]["app_context"]["page"]["uri"]=="https://example.com/article"
+                assert state["blobs"][0]["context"]["app_context"]["selections"][0]["text"]=="Selected fixture sentence"
                 assert state["blobs"][0]["context"]["content"]["full"]["status"] == "on-demand"
                 brief = state["blobs"][0]["context"]["brief"]
                 assert brief["content"]["text_chars"] == len("preview alpha"), brief

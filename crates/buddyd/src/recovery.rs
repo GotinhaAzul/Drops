@@ -225,6 +225,7 @@ mod tests {
 
     fn blob(id: &str) -> Blob {
         Blob {
+            directory: None,
             appearance: buddy_proto::DropAppearance::default(),
             offset: [0, 0],
             id: id.to_string(),

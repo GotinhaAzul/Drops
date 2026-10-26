@@ -18,6 +18,25 @@ pub fn is_terminal(class: &str) -> bool {
             | "ghostty"
             | "org.wezfurlong.wezterm"
             | "wezterm"
+            | "org.gnome.terminal"
+            | "gnome-terminal"
+            | "gnome-terminal-server"
+            | "org.gnome.console"
+            | "kgx"
+            | "org.gnome.ptyxis"
+            | "ptyxis"
+            | "org.kde.konsole"
+            | "konsole"
+            | "xfce4-terminal"
+            | "tilix"
+            | "com.gexperts.tilix"
+            | "terminator"
+            | "xterm"
+            | "uxterm"
+            | "urxvt"
+            | "st"
+            | "rio"
+            | "lxterminal"
     )
 }
 fn is_editor(class: &str) -> bool {
@@ -34,7 +53,261 @@ fn is_editor(class: &str) -> bool {
             | "jetbrains-pycharm"
             | "jetbrains-rustrover"
             | "jetbrains-webstorm"
+            | "jetbrains-clion"
+            | "jetbrains-goland"
+            | "jetbrains-phpstorm"
+            | "jetbrains-rider"
+            | "jetbrains-datagrip"
+            | "sublime_text"
+            | "sublime-text"
+            | "geany"
+            | "kate"
+            | "org.kde.kate"
+            | "org.gnome.builder"
     )
+}
+
+fn is_file_manager(class: &str) -> bool {
+    matches!(
+        class.to_ascii_lowercase().as_str(),
+        "org.gnome.nautilus"
+            | "nautilus"
+            | "org.kde.dolphin"
+            | "dolphin"
+            | "thunar"
+            | "org.xfce.thunar"
+            | "nemo"
+            | "nemo.nemo"
+            | "caja"
+            | "pcmanfm"
+            | "pcmanfm-qt"
+            | "org.kde.krusader"
+            | "krusader"
+            | "io.elementary.files"
+            | "pantheon-files"
+            | "spacefm"
+    )
+}
+
+fn is_local_document_app(class: &str) -> bool {
+    matches!(
+        class.to_ascii_lowercase().as_str(),
+        "org.gnome.papers"
+            | "papers"
+            | "org.gnome.evince"
+            | "evince"
+            | "org.kde.okular"
+            | "okular"
+            | "org.pwmt.zathura"
+            | "zathura"
+            | "org.gnome.loupe"
+            | "loupe"
+            | "org.gnome.eog"
+            | "eog"
+            | "org.kde.gwenview"
+            | "gwenview"
+            | "imv"
+            | "feh"
+            | "org.gnome.texteditor"
+            | "org.gnome.gedit"
+            | "gedit"
+            | "mousepad"
+            | "org.xfce.mousepad"
+            | "leafpad"
+            | "org.kde.kwrite"
+            | "kwrite"
+    )
+}
+
+pub fn app_kind(class: &str) -> &'static str {
+    let class = class.to_ascii_lowercase();
+    if is_terminal(&class) {
+        "terminal"
+    } else if is_file_manager(&class) {
+        "file_manager"
+    } else if is_editor(&class) {
+        "editor"
+    } else if is_local_document_app(&class) || is_office(&class) {
+        "document"
+    } else if class.starts_with("chrome-")
+        || class.starts_with("brave-")
+        || class.starts_with("crx_")
+        || matches!(
+            class.as_str(),
+            "firefox"
+                | "org.mozilla.firefox"
+                | "firefoxdeveloperedition"
+                | "firefox-nightly"
+                | "org.chromium.chromium"
+                | "com.google.chrome"
+                | "com.brave.browser"
+                | "librewolf"
+                | "floorp"
+                | "zen"
+                | "zen-browser"
+                | "app.zen_browser.zen"
+                | "chromium"
+                | "chromium-browser"
+                | "google-chrome"
+                | "google-chrome-stable"
+                | "brave-browser"
+                | "brave-browser-stable"
+                | "microsoft-edge"
+                | "org.gnome.epiphany"
+                | "epiphany"
+                | "vivaldi-stable"
+                | "vivaldi"
+        )
+    {
+        "browser"
+    } else {
+        "window"
+    }
+}
+
+fn local_path(value: &str) -> Option<PathBuf> {
+    if value.starts_with("file:") {
+        let url = url::Url::parse(value).ok()?;
+        if url.query().is_some() || url.fragment().is_some() {
+            return None;
+        }
+        return url.to_file_path().ok();
+    }
+    if let Some(relative) = value.strip_prefix("~/") {
+        return std::env::var_os("HOME").map(|home| PathBuf::from(home).join(relative));
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
+/// Resolve live, window-specific location metadata before launch evidence.
+/// No whole-home search, OCR inference, clipboard or focus changes.
+pub async fn detect_window(context: &Value, process: &ProcessInfo, shared_pid: bool) -> Value {
+    let class = context
+        .pointer("/window/class")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let executable = process
+        .cmdline
+        .first()
+        .and_then(|s| Path::new(s).file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if is_terminal(class) || is_terminal(executable) {
+        return detect(
+            if is_terminal(class) {
+                class
+            } else {
+                executable
+            },
+            process,
+            shared_pid,
+        )
+        .await;
+    }
+    let manager = is_file_manager(class);
+    // Browser document titles and accessibility names are controlled by web
+    // pages. They must never select a local tool root, even when a page names
+    // an existing absolute path. Probe supported local applications only.
+    if !manager && !is_editor(class) && !is_local_document_app(class) {
+        return json!({"status":"unavailable","warnings":["This application does not expose a supported local folder. Browser/page titles cannot grant local file access."]});
+    }
+    let mut probe_input = context.clone();
+    probe_input["file_manager"] = json!(manager);
+    let probe = crate::capture::workspace_probe(probe_input).await;
+    if let Ok(ref probe) = probe {
+        if probe["unsupported_location"] == true {
+            return json!({"status":"unavailable","source":"window-location","warnings":probe["warnings"]});
+        }
+        if probe["ambiguous"] == true {
+            return json!({"status":"ambiguous","source":"window-location","warnings":probe["warnings"]});
+        }
+        let mut candidates = BTreeSet::new();
+        let mut opened_file = None;
+        let mut unresolved = false;
+        for value in probe["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if let Some(path) = local_path(value) {
+                if let Ok(path) = tokio::fs::canonicalize(path).await {
+                    if path.is_dir() {
+                        candidates.insert(path);
+                    } else if !manager && path.is_file() {
+                        opened_file = Some(path.clone());
+                        if let Some(parent) = path.parent() {
+                            candidates.insert(parent.to_path_buf());
+                        }
+                    } else {
+                        unresolved = true;
+                    }
+                } else {
+                    unresolved = true;
+                }
+            } else {
+                unresolved = true;
+            }
+        }
+        if unresolved {
+            return json!({"status":"unavailable","source":"window-location","warnings":["A current window location is unavailable; no other folder was substituted"]});
+        }
+        if !candidates.is_empty() {
+            let source = probe["source"].as_str().unwrap_or("window-location");
+            let mut result =
+                resolve_with_policy(candidates, source, opened_file, is_editor(class)).await;
+            if let Some(notes) = probe["warnings"].as_array() {
+                result["warnings"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(notes.clone());
+            }
+            return result;
+        }
+    }
+    if is_local_document_app(class) {
+        return json!({"status":"unavailable","source":"window-location","warnings":["No current local document URI was exposed by this window. Document titles alone cannot grant folder access."]});
+    }
+    // Explicit full paths in the current title are useful even for reused GUI
+    // processes. A bare project/folder name never becomes a guessed path.
+    let title = context
+        .pointer("/window/title")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let mut candidates = BTreeSet::new();
+    let mut opened_file = None;
+    for value in std::iter::once(title).chain(
+        [" — ", " – ", " - "]
+            .into_iter()
+            .filter_map(|separator| title.split_once(separator).map(|(prefix, _)| prefix)),
+    ) {
+        if let Some(path) = local_path(value) {
+            if let Ok(path) = tokio::fs::canonicalize(path).await {
+                if path.is_dir() {
+                    candidates.insert(path);
+                } else if !manager && path.is_file() {
+                    opened_file = Some(path.clone());
+                    if let Some(parent) = path.parent() {
+                        candidates.insert(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    if !candidates.is_empty() {
+        return resolve_with_policy(
+            candidates,
+            "window-title-path",
+            opened_file,
+            is_editor(class),
+        )
+        .await;
+    }
+    if manager {
+        return json!({"status":"unavailable","source":"file-manager-location","warnings":["The current file-explorer folder was not exposed by its location controls or live FileManager1 state. Startup directories are not used because navigation can make them stale. Choose a folder if needed."],"probe_warnings":probe.ok().map(|p|p["warnings"].clone())});
+    }
+    detect(class, process, shared_pid).await
 }
 
 fn is_office(class: &str) -> bool {
@@ -242,7 +515,10 @@ async fn detect_at(
                 skip_next = false;
                 continue;
             }
-            if arg.starts_with('-') {
+            let inline_path = arg
+                .split_once('=')
+                .filter(|(flag, _)| matches!(*flag, "--folder-uri" | "--file-uri" | "--project"));
+            if arg.starts_with('-') && inline_path.is_none() {
                 // Only explicit directory flags are meaningful workspace evidence.
                 if !matches!(
                     arg.as_str(),
@@ -258,14 +534,18 @@ async fn detect_at(
                         | "--goto"
                         | "-g"
                 ) {
-                    skip_next = true;
+                    skip_next = !arg.contains('=');
                 }
                 continue;
             }
-            let path = if let Some(path) = arg.strip_prefix("file://") {
-                PathBuf::from(path)
+            let value = inline_path.map_or(arg.as_str(), |(_, value)| value);
+            let path = if value.starts_with("file:") {
+                let Some(path) = local_path(value) else {
+                    continue;
+                };
+                path
             } else {
-                PathBuf::from(arg)
+                PathBuf::from(value)
             };
             let path = if path.is_absolute() {
                 path
@@ -279,6 +559,16 @@ async fn detect_at(
             };
             if path.is_dir() {
                 candidates.insert(path);
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "code-workspace")
+            {
+                match workspace_folders(&path).await {
+                    Some(folders) => candidates.extend(folders),
+                    None => {
+                        return json!({"status":"unavailable","source":"editor-workspace-file","warnings":["The editor workspace file could not be resolved safely"]})
+                    }
+                }
             } else if path.is_file() {
                 active_file = Some(path.clone());
                 if let Some(parent) = path.parent() {
@@ -288,6 +578,36 @@ async fn detect_at(
         }
     }
     resolve_candidates(candidates, source, active_file).await
+}
+
+/// VS Code workspace files describe the folders, not their own containing dir.
+async fn workspace_folders(path: &Path) -> Option<BTreeSet<PathBuf>> {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path).await.ok()?;
+    let mut bytes = Vec::new();
+    file.take(65_537).read_to_end(&mut bytes).await.ok()?;
+    if bytes.len() > 65_536 {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let folders = value["folders"].as_array()?;
+    if folders.is_empty() || folders.len() > 32 {
+        return None;
+    }
+    let mut result = BTreeSet::new();
+    for folder in folders {
+        let target = if let Some(uri) = folder["uri"].as_str() {
+            local_path(uri)?
+        } else {
+            path.parent()?.join(folder["path"].as_str()?)
+        };
+        let target = tokio::fs::canonicalize(target).await.ok()?;
+        if !target.is_dir() {
+            return None;
+        }
+        result.insert(target);
+    }
+    Some(result)
 }
 
 // stat begins with pid (comm with spaces/parentheses), then state, ppid,
@@ -385,13 +705,26 @@ async fn resolve_candidates(
     source: &str,
     active_file: Option<PathBuf>,
 ) -> Value {
+    resolve_with_policy(candidates, source, active_file, true).await
+}
+
+async fn resolve_with_policy(
+    candidates: BTreeSet<PathBuf>,
+    source: &str,
+    active_file: Option<PathBuf>,
+    promote_repository: bool,
+) -> Value {
     // Several editor files within one repo are one workspace; multiple terminal
     // directories remain ambiguous even if they happen to share a repository.
     let mut roots = BTreeSet::new();
     for candidate in &candidates {
-        let root = repository(candidate)
-            .await
-            .unwrap_or_else(|| candidate.clone());
+        let root = if promote_repository {
+            repository(candidate)
+                .await
+                .unwrap_or_else(|| candidate.clone())
+        } else {
+            candidate.clone()
+        };
         roots.insert(root);
     }
     if candidates.is_empty()
@@ -431,6 +764,55 @@ async fn resolve_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn editor_file_uris_inline_flags_and_workspace_files() {
+        let base = temp();
+        let first = base.join("first folder");
+        let second = base.join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let uri = url::Url::from_directory_path(&first).unwrap();
+        let mut process = ProcessInfo {
+            pid: 10,
+            cwd: Some(base.to_string_lossy().into()),
+            cmdline: vec!["code".into(), format!("--folder-uri={uri}")],
+            available: true,
+            error: None,
+        };
+        assert_eq!(
+            detect_at("code", &process, false, &base).await["root"],
+            first.to_string_lossy().as_ref()
+        );
+        let workspace = base.join("work.code-workspace");
+        std::fs::write(
+            &workspace,
+            json!({"folders":[{"path":"first folder"}]}).to_string(),
+        )
+        .unwrap();
+        process.cmdline = vec!["code".into(), workspace.to_string_lossy().into()];
+        assert_eq!(
+            detect_at("code", &process, false, &base).await["root"],
+            first.to_string_lossy().as_ref()
+        );
+        std::fs::write(
+            &workspace,
+            json!({"folders":[{"path":"first folder"},{"path":"second"}]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            detect_at("code", &process, false, &base).await["status"],
+            "ambiguous"
+        );
+        process.cmdline = vec![
+            "code".into(),
+            "--folder-uri=file://remote/tmp/project".into(),
+        ];
+        assert_eq!(
+            detect_at("code", &process, false, &base).await["status"],
+            "unavailable"
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
     fn temp() -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "drops-workspace-{}-{}",

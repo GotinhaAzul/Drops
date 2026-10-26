@@ -14,3 +14,4 @@ tokio-util.workspace = true
 
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
+url = "2"

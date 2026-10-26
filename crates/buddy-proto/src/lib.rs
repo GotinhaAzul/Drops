@@ -77,6 +77,11 @@ pub enum Command {
         id: String,
         appearance: DropAppearance,
     },
+    /// Choose a confined file workspace for one Drop; null restores detection.
+    Directory {
+        id: String,
+        path: Option<String>,
+    },
     Preview {
         x: i32,
         y: i32,
@@ -137,6 +142,8 @@ pub enum DropAppearance {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blob {
+    #[serde(default)]
+    pub directory: Option<std::path::PathBuf>,
     #[serde(default)]
     pub appearance: DropAppearance,
     /// Decoration offset from the coordinate-free anchor reference.

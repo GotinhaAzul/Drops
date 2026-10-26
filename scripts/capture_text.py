@@ -47,6 +47,8 @@ import time
 import unicodedata
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterable, Optional
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +325,35 @@ class AtspiBackend:
         except Exception:
             return None
         return (text or ""), total
+
+    def document_uri(self, node: Any) -> str:
+        if not node.is_document():
+            return ""
+        for key in ("DocURL", "URI", "URL"):
+            value = self.atspi.Document.get_document_attribute_value(node, key)
+            if value:
+                return value if len(value) <= 4096 else ""
+        return ""
+
+    def text_selections(self, node: Any, limit: int) -> list[dict[str, Any]]:
+        if not node.is_text():
+            return []
+        result = []
+        for index in range(min(8, self.atspi.Text.get_n_selections(node))):
+            bounds = self.atspi.Text.get_selection(node, index)
+            start, end = bounds.start_offset, bounds.end_offset
+            if start < 0 or end <= start or limit <= 0:
+                continue
+            text = self.atspi.Text.get_text(node, start, min(end, start + limit)) or ""
+            result.append({"text": text, "start": start, "end": end, "truncated": end-start > len(text)})
+            limit -= len(text)
+        return result
+
+    def selected_children(self, node: Any) -> tuple[list[Any], int]:
+        if not node.is_selection():
+            return [], 0
+        count = self.atspi.Selection.get_n_selected_children(node)
+        return [self.atspi.Selection.get_selected_child(node, i) for i in range(min(20, count))], count
 
 
 def _load_atspi() -> tuple[Optional[Any], Optional[str]]:
@@ -611,19 +642,66 @@ def _canon(text: str) -> str:
     return " ".join(text.split())
 
 
+def collect_app_node(backend: Any, node: Any, role: str,
+                     app: dict[str, Any], guard: _Guard, depth: int) -> None:
+    """Collect explicit selections and document metadata, never infer them
+    from ordinary page text, a window title, or clipboard contents.
+    """
+    if role in {"document frame", "document web", "document text", "document"} and len(app["documents"]) < 4:
+        uri = guard.call(lambda: backend.document_uri(node), "") if hasattr(backend, "document_uri") else ""
+        if uri and len(uri) <= 4096 and not any(d["uri"] == uri for d in app["documents"]):
+            app["documents"].append({"uri": uri[:4096], "title": guard.call(lambda: backend.name(node), "")[:512], "depth": depth})
+    remaining = 6000 - sum(len(s["text"]) for s in app["selections"])
+    if remaining > 0 and len(app["selections"]) < 8 and hasattr(backend, "text_selections"):
+        for selected in guard.call(lambda: backend.text_selections(node, remaining), []):
+            if not isinstance(selected, dict) or not selected.get("text"):
+                continue
+            selected = {**selected, "text": selected["text"][:remaining]}
+            if selected not in app["selections"]:
+                app["selections"].append(selected)
+                remaining -= len(selected["text"])
+            if remaining <= 0 or len(app["selections"]) >= 8:
+                break
+    if app["kind"] != "file_manager" or role not in {"table", "list box", "layered pane"} or not hasattr(backend, "selected_children"):
+        return
+    children, total = guard.call(lambda: backend.selected_children(node), ([], 0))
+    app["items_truncated"] |= total > len(children)
+    for child in children:
+        if child is None or is_protected(backend, child, guard):
+            continue
+        if "showing" not in guard.call(lambda: backend.states(child), set()):
+            continue
+        attrs = guard.call(lambda: backend.attributes(child), {})
+        name = guard.call(lambda: backend.name(child), "")
+        uri = attrs.get("uri") or attrs.get("url") or ""
+        item = {"name": name if len(name) <= 512 else "",
+                "uri": uri if len(uri) <= 4096 else "",
+                "container_role": role}
+        if len(uri) > 4096:
+            # Never substitute an inferred filename for a truncated URI.
+            item["container_role"] = "unresolved"
+        if item not in app["selected_items"]:
+            if len(app["selected_items"]) >= 20:
+                app["items_truncated"] = True
+                break
+            app["selected_items"].append(item)
+
+
 def collect_text(
     backend: Any,
     frame: Any,
     limits: Limits,
     deadline: float,
     guard: _Guard,
+    app_context: Optional[dict[str, Any]] = None,
+    metadata_only: bool = False,
 ) -> tuple[str, Stats]:
     """Collect bounded document text from one frame, depth first."""
     stats = Stats()
     blocks: list[str] = []
 
     def visit(node: Any, depth: int, ancestors: list[str]) -> None:
-        if stats.truncated:
+        if stats.node_limited or stats.timed_out:
             return
         if time.monotonic() >= deadline:
             stats.timed_out = True
@@ -638,12 +716,16 @@ def collect_text(
             return
 
         role = guard.call(lambda: backend.role(node), "")
-        remaining = limits.max_text_chars - stats.chars
-        if remaining <= 0:
-            stats.truncated = True
+        states = guard.call(lambda: backend.states(node), set())
+        if node is not frame and states and "showing" not in states:
             return
+        if app_context is not None and "showing" in states:
+            collect_app_node(backend, node, role, app_context, guard, depth)
+        remaining = limits.max_text_chars - stats.chars
+        if remaining <= 0 and not metadata_only:
+            stats.truncated = True
 
-        info = guard.call(
+        info = None if metadata_only or remaining <= 0 else guard.call(
             lambda: backend.text(node, min(remaining + 1, limits.max_text_chars + 1)),
             None,
         )
@@ -657,7 +739,7 @@ def collect_text(
                 stats.truncated = True
             block = _clean_block(raw)
 
-        if not block and role in _CONTENT_NAME_ROLES:
+        if not metadata_only and remaining > 0 and not block and role in _CONTENT_NAME_ROLES:
             name = guard.call(lambda: backend.name(node), "")
             block = _clean_block(name)
 
@@ -671,7 +753,7 @@ def collect_text(
                 stats.chars += len(block) + 1
                 ancestors = ancestors + [canonical]
 
-        if stats.truncated or stats.timed_out:
+        if stats.timed_out:
             return
 
         if depth >= limits.max_depth:
@@ -682,7 +764,7 @@ def collect_text(
 
         child_count = guard.call(lambda: backend.child_count(node), 0)
         for index in range(max(0, child_count)):
-            if stats.truncated or stats.timed_out or stats.node_limited:
+            if stats.timed_out or stats.node_limited:
                 return
             child = guard.call(
                 lambda node=node, index=index: backend.child(node, index), None
@@ -704,6 +786,8 @@ def capture_accessibility(
     window: dict[str, Any],
     limits: Limits,
     deadline: float,
+    app_kind: str = "window",
+    metadata_only: bool = False,
 ) -> tuple[Optional[dict[str, Any]], list[str]]:
     """Capture accessibility text for the anchored window only."""
     warnings: list[str] = []
@@ -727,7 +811,10 @@ def capture_accessibility(
         return None, warnings
 
     guard = _Guard()
-    text, stats = collect_text(backend, selection.frame, limits, deadline, guard)
+    app_context = {"kind": app_kind, "documents": [], "selections": [], "selected_items": [], "items_truncated": False,
+                   "source": "accessibility", "scope": "matched-window"}
+    text, stats = collect_text(backend, selection.frame, limits, deadline, guard, app_context, metadata_only)
+    app_context["partial"] = stats.timed_out or stats.node_limited or stats.depth_limited
     if stats.timed_out:
         warnings.append(
             "accessibility traversal reached its time budget; text is partial"
@@ -756,7 +843,7 @@ def capture_accessibility(
             f"skipped {stats.errors} accessibility node(s) that returned errors"
         )
 
-    if not text.strip():
+    if not text.strip() and not any(app_context[key] for key in ("documents", "selections", "selected_items")):
         warnings.append(
             f"matched window {title!r} exposed no readable accessibility text"
         )
@@ -774,6 +861,7 @@ def capture_accessibility(
         },
         "match": selection.match,
         "nodes_visited": stats.nodes,
+        "app_context": app_context,
     }
     return source, warnings
 
@@ -1068,6 +1156,173 @@ def capture_tmux(
 # ---------------------------------------------------------------------------
 
 
+def local_path(value: str) -> Optional[Path]:
+    """Decode local paths without turning a remote URI into a local grant."""
+    if not isinstance(value, str) or len(value) > 4096 or "\x00" in value:
+        return None
+    if value.startswith("file:"):
+        try:
+            uri = urlsplit(value)
+        except ValueError:
+            return None
+        if uri.netloc not in {"", "localhost"} or uri.query or uri.fragment:
+            return None
+        try:
+            value = unquote(uri.path, errors="strict")
+        except (UnicodeError, ValueError):
+            return None
+    if "\x00" in value:
+        return None
+    if value.startswith("~/"):
+        value = str(Path.home() / value[2:])
+    path = Path(value)
+    return path if path.is_absolute() else None
+
+
+def file_manager_locations(pid: int) -> list[str]:
+    """Read FileManager1 only if the bus service belongs to the anchored PID.
+
+    OpenLocations is live state (including tabs), never a launch argument.
+    DO_NOT_AUTO_START prevents probing from launching a file manager.
+    """
+    try:
+        from gi.repository import Gio, GLib
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        def call(dest, path, iface, method, args):
+            return bus.call_sync(dest, path, iface, method, args, None,
+                                 Gio.DBusCallFlags.NO_AUTO_START, 250, None).unpack()
+        owner = call("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                     "org.freedesktop.DBus", "GetNameOwner",
+                     GLib.Variant("(s)", ("org.freedesktop.FileManager1",)))[0]
+        owner_pid = call("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                         "org.freedesktop.DBus", "GetConnectionUnixProcessID",
+                         GLib.Variant("(s)", (owner,)))[0]
+        if owner_pid != pid:
+            return []
+        result = call(owner, "/org/freedesktop/FileManager1",
+                      "org.freedesktop.DBus.Properties", "Get",
+                      GLib.Variant("(ss)", ("org.freedesktop.FileManager1", "OpenLocations")))[0]
+        return list(result) if len(result) <= 128 else []
+    except Exception:
+        return []
+
+
+def run_workspace_probe(context: dict[str, Any], *, backend: Any = None,
+                        locations: Optional[list[str]] = None) -> dict[str, Any]:
+    """Read location metadata, never screen text, keystrokes or document bodies.
+
+    Visible location controls are bound to one PID/title-matched window. A
+    basename in a title only disambiguates paths verified from live D-Bus state.
+    An explorer's startup arguments/cwd are deliberately not fallback evidence.
+    """
+    window = context.get("window", {})
+    if context.get("screen_locked") or context.get("visible") is False:
+        return {"paths": [], "warnings": ["Window is locked or not visible"]}
+    pid = _coerce_pid(window.get("pid"))
+    if pid is None:
+        return {"paths": [], "warnings": ["Window has no usable PID"]}
+    title = str(window.get("title", ""))
+    manager = context.get("file_manager") is True
+    paths: set[str] = set()
+    nonlocal_location = False
+    warnings: list[str] = []
+    deadline = time.monotonic() + 1.25
+    guard = _Guard()
+    if backend is None:
+        atspi, warning = _load_atspi()
+        if warning:
+            warnings.append(warning)
+        if atspi is not None:
+            backend = AtspiBackend(atspi)
+    if backend is not None:
+        selection, notes = select_window(backend, pid, title, guard)
+        warnings.extend(notes)
+        if selection:
+            pending = [(selection.frame, 0)]
+            scanned = 0
+            incomplete = False
+            while pending:
+                if scanned >= 1000 or time.monotonic() >= deadline:
+                    incomplete = True
+                    break
+                node, depth = pending.pop()
+                scanned += 1
+                if is_protected(backend, node, guard):
+                    continue
+                states = guard.call(lambda: backend.states(node), set())
+                # Hidden tabs/panes must not compete with the displayed folder.
+                if node is not selection.frame and "showing" not in states:
+                    continue
+                role = guard.call(lambda: backend.role(node), "")
+                name = guard.call(lambda: backend.name(node), "")
+                attrs = guard.call(lambda: backend.attributes(node), {})
+                semantic = " ".join([name, attrs.get("id", ""), attrs.get("name", "")]).casefold()
+                location = manager and role in {"text", "entry", "combo box", "label"} and any(
+                    word in semantic for word in ("location", "address", "path", "url"))
+                if location or role == "document frame":
+                    values = [attrs.get("uri", ""), attrs.get("url", "")]
+                    if role == "document frame" and hasattr(backend, "document_uri"):
+                        values.append(guard.call(lambda: backend.document_uri(node), ""))
+                    if location:
+                        values.append(name)
+                        text = guard.call(lambda: backend.text(node, 4096), None)
+                        if text and text[1] <= 4096:
+                            values.append(text[0])
+                    for value in values:
+                        path = local_path(value)
+                        if path is not None:
+                            paths.add(str(path))
+                        elif manager and re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", value):
+                            nonlocal_location = True
+                # Location metadata never requires traversing document bodies
+                # or thousands of file rows. It also avoids extracting paths
+                # from a sidebar's arbitrary selected item.
+                if role in {"document frame", "table", "tree", "list", "list box", "icon", "terminal", "paragraph", "entry", "text"}:
+                    continue
+                if depth < 24:
+                    count = guard.call(lambda: backend.child_count(node), 0)
+                    if count > 1000:
+                        incomplete = True
+                    for index in range(min(1000, count)):
+                        child = guard.call(lambda: backend.child(node, index), None)
+                        if child is not None:
+                            pending.append((child, depth + 1))
+                elif guard.call(lambda: backend.child_count(node), 0):
+                    incomplete = True
+            if incomplete:
+                paths.clear()
+                warnings.append("Location-control scan was incomplete")
+            if nonlocal_location:
+                return {"paths": [], "unsupported_location": True,
+                        "warnings": ["The visible location is remote or virtual; no local folder was substituted"]}
+            if paths:
+                if len(paths) > 8:
+                    return {"paths": [], "ambiguous": True, "warnings": ["Too many visible location controls"]}
+                return {"paths": sorted(paths), "source": "window-location", "warnings": warnings}
+    if manager:
+        locations = file_manager_locations(pid) if locations is None else locations
+        live = {str(path) for value in locations if (path := local_path(value)) is not None}
+        # Even one live location must match this window: another tab might be
+        # local while the displayed tab is trash, search results or a remote URL.
+        labels = {title}
+        for delimiter in (" — ", " – ", " - "):
+            labels.add(title.split(delimiter)[0])
+        for value in locations:
+            if local_path(value) is None:
+                try:
+                    name = unquote(urlsplit(value).path.rstrip("/").rsplit("/", 1)[-1])
+                except ValueError:
+                    continue
+                if name and name in labels:
+                    return {"paths": [], "unsupported_location": True,
+                            "warnings": ["A matching file-manager location is remote or virtual; the window could not be tied to a local folder"]}
+        paths = {value for value in live if Path(value).name in labels or value in labels}
+        if len(paths) > 8:
+            return {"paths": [], "ambiguous": True, "warnings": ["Too many matching live folders"]}
+        return {"paths": sorted(paths), "source": "file-manager-locations", "warnings": warnings}
+    return {"paths": [], "warnings": warnings}
+
+
 def _dedupe(items: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -1094,6 +1349,7 @@ def run_capture(
     started = time.monotonic() if start is None else start
     warnings: list[str] = []
     sources: list[dict[str, Any]] = []
+    app_context: dict[str, Any] = {}
 
     if not isinstance(context, dict):
         return {
@@ -1131,7 +1387,8 @@ def run_capture(
         )
         try:
             source, source_warnings = capture_accessibility(
-                backend, window, limits, accessibility_deadline
+                backend, window, limits, accessibility_deadline,
+                str(context.get("app_kind", "window")), context.get("app_probe") is True,
             )
         except Exception as exc:  # noqa: BLE001 - never fail the chat turn
             source = None
@@ -1140,6 +1397,7 @@ def run_capture(
             ]
         warnings.extend(source_warnings)
         if source is not None:
+            app_context = source.pop("app_context", {})
             sources.append(source)
 
     if enable_tmux and options.terminal:
@@ -1165,7 +1423,7 @@ def run_capture(
                     tmux_source["supersedes_accessibility"] = True
             sources.append(tmux_source)
 
-    return {"sources": sources, "warnings": _dedupe(warnings)}
+    return {"sources": sources, "warnings": _dedupe(warnings), "app_context": app_context}
 
 
 def _emit(result: dict[str, Any]) -> None:
@@ -1193,7 +1451,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     try:
-        result = run_capture(context, limits=DEFAULT_LIMITS)
+        if isinstance(context, dict) and context.get("app_probe") is True:
+            if context.get("screen_locked") or context.get("visible") is False:
+                _emit({"sources": [], "warnings": ["App context unavailable while locked or hidden"]})
+                return 0
+            context["capture_options"] = {**context.get("capture_options", {}), "terminal": False, "max_nodes": 800, "budget_ms": 1200}
+        result = (run_workspace_probe(context) if isinstance(context, dict) and context.get("workspace_probe") is True
+                  else run_capture(context, limits=DEFAULT_LIMITS))
     except Exception as exc:  # noqa: BLE001 - always emit parseable output
         result = {
             "sources": [],

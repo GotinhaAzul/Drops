@@ -117,6 +117,15 @@ pub fn build(context: &Value) -> Value {
         "workspace": workspace,
         "document": document,
         "content": content,
+        "app": {
+            "kind": context["app_kind"],
+            "status": context.pointer("/app_context/status"),
+            "page": context.pointer("/app_context/page"),
+            "document": context.pointer("/app_context/document"),
+            "selection_count": context.pointer("/app_context/selections").and_then(Value::as_array).map_or(0, Vec::len),
+            "selected_item_count": context.pointer("/app_context/selected_items").and_then(Value::as_array).map_or(0, Vec::len),
+            "partial": context.pointer("/app_context/partial"),
+        },
         "evidence": {
             "sources": sources.into_iter().take(MAX_LIST + 4).collect::<Vec<_>>(),
             "ambiguous": ambiguous.into_iter().take(MAX_LIST).collect::<Vec<_>>(),

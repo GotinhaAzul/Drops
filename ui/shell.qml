@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs as Dialogs
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -85,13 +86,55 @@ ShellRoot {
     property var inspectedContext: null
     function inspectContext() {
         inspectedContext=selected ? selected.context : null
+        if(!state.panel_open)send({type:"toggle"})
         contextView.open()
         if(selected)send({type:"context",id:selectedId})
+    }
+    property string directoryDropId: ""
+    function openDirectory() {
+        if (!selected) return
+        directoryDropId=selected.id
+        directoryPath.text=selected.directory || (selected.context && selected.context.tool_workspace && selected.context.tool_workspace.root) || ""
+        failure=""
+        if (!state.panel_open) send({type:"toggle"})
+        directoryView.open()
+    }
+    function directoryLabel(blob) {
+        if (!blob) return "Choose a Drop first"
+        if (blob.directory) return blob.directory
+        const workspace=blob.context && blob.context.tool_workspace
+        if (workspace && workspace.source==="private") return "Automatic · no folder detected"
+        if (workspace && workspace.source==="configured") return workspace.root
+        return workspace && workspace.root ? "Automatic · "+workspace.root : "Automatic · follows the anchored app"
+    }
+    function directoryHint(blob) {
+        if (blob && blob.directory) return "Selected directory · file edits need approval"
+        const workspace=blob && blob.context && blob.context.tool_workspace
+        if (workspace && workspace.source==="private") return "Private folder · choose a directory to work on your files"
+        if (workspace && workspace.source==="configured") return "Configured directory · file edits need approval"
+        return "Follows the anchored app · choose a folder if detection fails"
     }
     function contextMetadata(value) {
         const copy=JSON.parse(JSON.stringify(value || {}))
         if(copy.content && copy.content.image)delete copy.content.image.data_url
         return JSON.stringify(copy,null,2)
+    }
+    function appDetails(blob) { return blob && blob.context && blob.context.app_context || ({}) }
+    function hasTargetSelection(blob) {
+        const app=appDetails(blob)
+        return !!((app.selections || []).length || (app.selected_items || []).length)
+    }
+    function appSummary(blob) {
+        const app=appDetails(blob)
+        const pieces=[]
+        if(app.page)pieces.push(app.page.title || app.page.uri)
+        else if(app.document)pieces.push(app.document.title || app.document.uri)
+        const selections=app.selections || []
+        if(selections.length)pieces.push("Highlighted text · "+selections.reduce((n,s)=>n+String(s.text || "").length,0)+" characters")
+        const items=app.selected_items || []
+        if(items.length)pieces.push(items.length+(app.items_truncated ? "+" : "")+" selected item"+(items.length===1 ? "" : "s"))
+        if(app.partial)pieces.push("Partial context")
+        return pieces.join("\n")
     }
     function openSettings() {
         loadSettings();settingsOpen=true;failure=""
@@ -157,6 +200,7 @@ ShellRoot {
         const workspace=context.tool_workspace || ({})
         const document=working.document || ({})
         if(document.path)return String(document.path).split("/").pop()+" · saved file"
+        if(blob && blob.directory)return String(blob.directory).split("/").pop()+" · selected directory"
         if(workspace.source==="anchor" || workspace.source==="configured")return String(workspace.root || "").split("/").pop()+" · workspace"
         if(working.status==="ambiguous")return "Workspace unclear · inspect context"
         return ""
@@ -170,6 +214,7 @@ ShellRoot {
         const hay=(String(window.class || "")+" "+String(window.title || "")+" "+String(blob.placement && blob.placement.label || "")).toLowerCase()
         const text=String(context.content && context.content.text || "").toLowerCase()
         if (/(^|\s)(htop|btop|top|glances)(\s|$)|system monitor|process (list|manager)/.test(hay) || /load average|cpu\(s\)|%cpu|mib mem/.test(text)) return "processes"
+        if(context.app_kind && context.app_kind!=="window")return context.app_kind
         if (/terminal|kitty|alacritty|foot|ghostty|wezterm|konsole|xterm/.test(hay)) return "terminal"
         if (/firefox|chromium|chrome|brave|zen browser|epiphany|webkit/.test(hay)) return "browser"
         if (/(^|\s)(code|code-oss|codium|zed|nvim|vim|emacs|helix)(\s|$)|text editor|sublime/.test(hay)) return "editor"
@@ -180,13 +225,31 @@ ShellRoot {
         const label=shortLabel(blob)
         if (kind==="processes") return "Oh, some processes! What do you need my help for?"
         if (kind==="terminal") return "I'm on your terminal. Want a second pair of eyes?"
-        if (kind==="browser") return "I'm reading this page with you. Want the short version?"
+        if (kind==="browser") return "I'm on this browser window. What would you like help with?"
         if (kind==="editor") return "I'm on " + label + ". Want me to take a look?"
+        if (kind==="file_manager") return "I'm on this folder. What would you like to work on?"
+        if (kind==="document") return "I'm here with your document. What would you like help with?"
         if (kind==="workspace") return "This workspace is all mine. What should we do?"
         return "I'm on " + label + ". What do you need?"
     }
     function suggestionsFor(blob) {
         const kind=contextKind(blob)
+        const app=appDetails(blob)
+        if((app.selections || []).length)return [
+            {label:"Explain selection",prompt:"Explain the highlighted text in app_context.selections in plain language. Use only the selection actually captured; if it is no longer available, tell me."},
+            {label:"Rewrite selection",prompt:"Draft a clearer version of the highlighted text in app_context.selections here in chat, preserving its meaning. If no selection was captured, tell me."}
+        ]
+        if(kind==="file_manager")return (app.selected_items || []).length ? [
+            {label:"Review selected files",prompt:"Review the selected explorer items in app_context. Use the available read tools only for verified paths within the tool workspace. Explain any items you cannot access."},
+            {label:"Suggest organization",prompt:"Suggest how to organize the selected explorer items in app_context. Do not change files yet; explain which paths are verified and any missing information."}
+        ] : [
+            {label:"What's in this folder?",prompt:"Use the file tools to explain what is in the detected folder. If no folder was detected, tell me instead of describing the private Drop directory as my folder."},
+            {label:"Help organize it",prompt:"Inspect the detected folder and suggest an organization plan. Do not change anything yet. If the folder could not be detected, tell me."}
+        ]
+        if(kind==="document")return [
+            {label:"Summarize document",prompt:"Summarize the current document using captured content and the available read tools. Explain any missing content or unsupported format."},
+            {label:"Explain this",prompt:"Explain what I am looking at in this document. Use captured evidence and tell me what you cannot read."}
+        ]
         if (kind==="processes") return [
             {label:"How's my CPU?",prompt:"How's my CPU right now?"},
             {label:"Biggest memory hog?",prompt:"Which process is using the most memory?"}
@@ -264,6 +327,7 @@ ShellRoot {
         const blob=state.blobs.find(b=>b.id===id)
         if (!blob || !blob.placement || blob.placement.anchor.kind==="panel") return
         selectedId=id;chatOpen=true;failure=""
+        if (!root.selectedBusy) send({type:"context",id:id})
         root.markResponseSeen(blob)
         if (state.panel_open) send({type:"toggle"})
         if (focus!==false) focusTimer.restart()
@@ -727,9 +791,26 @@ ShellRoot {
                     color:root.ink;font.pixelSize:13;lineHeight:1.16
                     text:root.greetingFor(bubble.blob)
                 }
+                Rectangle {
+                    width:parent.width;height:visible ? appSummaryText.implicitHeight+16 : 0
+                    visible:root.appSummary(bubble.blob).length>0
+                    radius:8;color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.08)
+                    Text {
+                        id:appSummaryText;x:8;y:8;width:parent.width-38
+                        text:root.appSummary(bubble.blob);textFormat:Text.PlainText;wrapMode:Text.Wrap
+                        maximumLineCount:3;elide:Text.ElideRight;color:root.accent;font.pixelSize:10
+                    }
+                    MouseArea {anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:{root.selectedId=bubble.blob.id;root.inspectContext()}}
+                    ToolButton {
+                        anchors.right:parent.right;anchors.top:parent.top;width:28;height:28;text:"↻"
+                        enabled:!bubble.busy;Accessible.name:"Refresh app context"
+                        ToolTip.visible:hovered;ToolTip.text:"Refresh what this Drop sees"
+                        onClicked:root.send({type:"context",id:bubble.blob.id})
+                    }
+                }
                 Flow {
                     id:suggestionFlow
-                    visible:!bubble.hasHistory
+                    visible:!bubble.hasHistory || root.hasTargetSelection(bubble.blob)
                     width:parent.width;spacing:6
                     Repeater {
                         model:root.suggestionsFor(bubble.blob)
@@ -980,8 +1061,8 @@ ShellRoot {
         visible:root.state.panel_open && !root.capturing
         anchors {top:true;right:true}
         margins {top:40;right:20}
-        implicitWidth:260
-        implicitHeight:root.settingsOpen ? 444 : 314+(root.selected && root.selected.context && root.selected.context.content ? 18 : 0)+(root.failure ? 26 : 0)
+        implicitWidth:320
+        implicitHeight:root.settingsOpen ? 444 : panelContent.implicitHeight+28
         color:"transparent";exclusionMode:ExclusionMode.Ignore
         WlrLayershell.namespace:"drops-panel"
         WlrLayershell.keyboardFocus:WlrKeyboardFocus.OnDemand
@@ -989,10 +1070,11 @@ ShellRoot {
         Rectangle {
             anchors.fill:parent;color:root.background;radius:18;border.color:"#4b5545";border.width:1
             ColumnLayout {
+                id:panelContent
                 visible:!root.settingsOpen
                 anchors.fill:parent;anchors.margins:14;spacing:8
                 Item {
-                    Layout.fillWidth:true;Layout.preferredHeight:112
+                    Layout.fillWidth:true;Layout.preferredHeight:92
                     DropFace {
                         anchors.centerIn:parent;width:76;height:74
                         look:root.currentDrop ? root.currentDrop.appearance || "drop" : root.pendingLook
@@ -1014,7 +1096,10 @@ ShellRoot {
                             model:root.blobIds
                             delegate: Rectangle {
                                 required property string modelData
-                                width:8;height:8;radius:4;color:root.accent;opacity:root.selectedId===modelData && root.chatOpen ? 1 : 0.4
+                                width:18;height:18;radius:9;color:root.accent;opacity:root.selectedId===modelData ? 1 : 0.4
+                                Text {anchors.centerIn:parent;text:root.blobIds.indexOf(parent.modelData)+1;color:root.background;font.pixelSize:10}
+                                Accessible.role:Accessible.Button
+                                Accessible.name:"Select Drop "+(root.blobIds.indexOf(modelData)+1)
                                 MouseArea {anchors.fill:parent;anchors.margins:-5;onClicked:{root.selectedId=parent.modelData;root.chatOpen=false}}
                             }
                         }
@@ -1043,10 +1128,38 @@ ShellRoot {
                     }
                     onClicked:root.openChat(root.currentDrop.id,true)
                 }
+                Rectangle {
+                    Layout.fillWidth:true;implicitHeight:directoryInfo.implicitHeight+18
+                    radius:9;color:Qt.rgba(root.accent.r,root.accent.g,root.accent.b,0.06)
+                    border.color:"#4b5545"
+                    ColumnLayout {
+                        id:directoryInfo;anchors.fill:parent;anchors.margins:9;spacing:4
+                        RowLayout {
+                            Layout.fillWidth:true
+                            Label {text:"File access";color:root.ink;font.pixelSize:11;Layout.fillWidth:true}
+                            ToolButton {
+                                id:directoryButton;text:"Choose folder…";font.pixelSize:10
+                                enabled:!!root.selected && !root.selectedBusy && root.connected
+                                Accessible.name:"Choose working directory"
+                                onClicked:root.openDirectory()
+                            }
+                        }
+                        Label {Layout.fillWidth:true;text:root.directoryLabel(root.selected);elide:Text.ElideMiddle;color:root.accent;font.pixelSize:11;ToolTip.visible:directoryHover.containsMouse;ToolTip.text:text
+                            MouseArea {id:directoryHover;anchors.fill:parent;hoverEnabled:true;onClicked:root.inspectContext()}
+                        }
+                        Label {Layout.fillWidth:true;text:root.sudo ? "Edits run without prompts in this directory" : root.directoryHint(root.selected);wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10}
+                    }
+                }
                 Label {
                     visible:!!root.selected && !!root.selected.context && !!root.selected.context.content
                     Layout.fillWidth:true;horizontalAlignment:Text.AlignHCenter;color:root.muted;font.pixelSize:10
                     text:!root.selected || !root.selected.context || !root.selected.context.content ? "" : root.selected.context.content.status==="captured" ? "Window content attached · click to inspect" : "Window content unavailable · click for details"
+                    MouseArea {anchors.fill:parent;onClicked:root.inspectContext()}
+                }
+                Label {
+                    visible:root.appSummary(root.selected).length>0
+                    Layout.fillWidth:true;text:root.appSummary(root.selected);wrapMode:Text.Wrap;textFormat:Text.PlainText
+                    maximumLineCount:3;elide:Text.ElideRight;color:root.accent;font.pixelSize:10
                     MouseArea {anchors.fill:parent;onClicked:root.inspectContext()}
                 }
                 RowLayout {
@@ -1088,6 +1201,28 @@ ShellRoot {
                     text:root.currentDrop && root.currentDrop.placement.anchor.kind==="panel" ? "Drag me out, then click me to chat." : "Click a placed drop to talk right there."
                 }
                 Label {visible:!!root.failure;Layout.fillWidth:true;text:root.failure;wrapMode:Text.Wrap;color:"#f4a99a";font.pixelSize:10}
+            }
+            Dialog {
+                id:directoryView
+                x:8;y:8;width:parent.width-16;modal:true;padding:12
+                title:"Working directory"
+                ColumnLayout {
+                    width:parent.width;spacing:8
+                    Label {Layout.fillWidth:true;text:"This Drop can read and edit files inside this directory. File changes keep their approval and backup protections.";wrapMode:Text.Wrap;color:root.ink;font.pixelSize:11}
+                    TextField {id:directoryPath;Layout.fillWidth:true;placeholderText:"/absolute/path/to/folder";Accessible.name:"Working directory path";selectByMouse:true}
+                    Button {text:"Browse…";onClicked:folderPicker.open()}
+                    Label {Layout.fillWidth:true;text:"Automatic follows the anchored app when its directory can be detected.";wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10}
+                    RowLayout {
+                        Button {id:automaticDirectoryButton;text:"Automatic";onClicked:{root.send({type:"directory",id:root.directoryDropId,path:null});directoryView.close()}}
+                        Button {id:useDirectoryButton;text:"Use folder";enabled:directoryPath.text.trim().length>0;onClicked:{root.send({type:"directory",id:root.directoryDropId,path:directoryPath.text.trim()});directoryView.close()}}
+                    }
+                    Button {text:"Cancel";onClicked:directoryView.close()}
+                }
+            }
+            Dialogs.FolderDialog {
+                id:folderPicker
+                title:"Choose this Drop's working directory"
+                onAccepted:directoryPath.text=decodeURIComponent(String(selectedFolder).replace(/^file:\/\//,""))
             }
             ScrollView {
                 id:settingsScroll
@@ -1177,12 +1312,40 @@ ShellRoot {
                     id:contextScroll;anchors.fill:parent;contentWidth:availableWidth;clip:true
                     Column {
                         width:contextScroll.availableWidth;spacing:8
+                        Label {text:"What this Drop sees";font.pixelSize:15;color:root.ink}
+                        Label {width:parent.width;text:root.inspectedContext && root.inspectedContext.app_context && root.inspectedContext.app_context.status==="disabled" ? "Window content capture is off." : "Refreshed when opened or sent. Missing selections and paths are never guessed.";wrapMode:Text.Wrap;color:root.muted;font.pixelSize:10}
+                        TextArea {width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.accent;text:root.inspectedContext && root.inspectedContext.tool_workspace ? "File access: "+root.inspectedContext.tool_workspace.root : "File access: not detected"}
+                        Repeater {
+                            model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.documents || [] : []
+                            delegate:TextArea {
+                                required property var modelData
+                                width:contextScroll.availableWidth;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink
+                                text:(modelData.title || "Page / document")+"\n"+modelData.uri
+                            }
+                        }
+                        Repeater {
+                            model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selections || [] : []
+                            delegate:TextArea {
+                                required property var modelData
+                                width:contextScroll.availableWidth;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink
+                                text:"Highlighted text"+(modelData.truncated ? " (partial)" : "")+"\n"+modelData.text
+                            }
+                        }
+                        Repeater {
+                            model:root.inspectedContext && root.inspectedContext.app_context ? root.inspectedContext.app_context.selected_items || [] : []
+                            delegate:Label {
+                                required property var modelData
+                                width:contextScroll.availableWidth;wrapMode:Text.Wrap;textFormat:Text.PlainText;color:root.ink
+                                text:modelData.name+"\n"+(modelData.path || (modelData.path_verified ? "Outside this Drop's file access" : "File path not verified"))
+                            }
+                        }
                         Image {
                             width:parent.width;height:visible ? Math.min(200,sourceSize.height*(width/Math.max(1,sourceSize.width))) : 0
                             fillMode:Image.PreserveAspectFit;visible:!!source
                             source:root.inspectedContext && root.inspectedContext.content && root.inspectedContext.content.image ? root.inspectedContext.content.image.data_url || "" : ""
                         }
-                        TextArea {width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink;text:root.contextMetadata(root.inspectedContext)}
+                        CheckBox {id:technicalContext;text:"Show technical details";palette.windowText:root.muted}
+                        TextArea {visible:technicalContext.checked;width:parent.width;readOnly:true;wrapMode:TextEdit.WrapAnywhere;textFormat:TextEdit.PlainText;color:root.ink;text:root.contextMetadata(root.inspectedContext)}
                     }
                 }
             }

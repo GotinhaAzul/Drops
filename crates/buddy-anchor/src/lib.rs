@@ -28,6 +28,7 @@
 //! Only `hyprctl -j` queries and a socket2 connection are used. No dispatch
 //! commands run, no configuration is written, and no desktop setting changes.
 
+mod app_context;
 pub mod brief;
 pub mod bundle;
 pub mod capture;
@@ -184,14 +185,14 @@ pub async fn context(anchor: &Anchor) -> Result<Value> {
                 .filter(|other| other.pid == client.pid && other.mapped && !other.hidden)
                 .count()
                 > 1;
+            let mut context = bundle::window_context(&snapshot, client, Some(&process));
             let working = if let Some(document) =
                 workspace::detect_document(&client.class, &client.title, &process).await
             {
                 document
             } else {
-                workspace::detect(&client.class, &process, shared_pid).await
+                workspace::detect_window(&context, &process, shared_pid).await
             };
-            let mut context = bundle::window_context(&snapshot, client, Some(&process));
             context["working_context"] = working;
             Ok(context)
         }

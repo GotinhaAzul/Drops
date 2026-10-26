@@ -36,7 +36,7 @@ def main():
      if kind=='terminal':
       command=['foot','--title',title,'sh','-c',"printf '\\n$ cargo bild\\nerror: no such command: bild\\nDid you mean build?\\n'; sleep 90"]
      elif kind=='browser':
-      page=tmp/'page.html';page.write_text('<title>'+title+'</title><h1>Drops browser fixture</h1><p>The telescope found three small moons.</p>')
+      page=tmp/'page.html';page.write_text('<title>'+title+'</title><h1>Drops browser fixture</h1><p>The telescope found <span id="chosen">three small moons</span>.</p><script>addEventListener("load",()=>{const range=document.createRange();range.selectNodeContents(document.getElementById("chosen"));const selection=getSelection();selection.removeAllRanges();selection.addRange(range)})</script>')
       command=['chromium','--ozone-platform=wayland','--force-renderer-accessibility','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-sync','--user-data-dir='+str(tmp/'browser-profile'),'--app='+page.as_uri()]
      else:
       code="import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk; w=Gtk.Window(title="+repr(title)+"); v=Gtk.TextView(); v.get_buffer().set_text('def divide(a, b):\\n    return a / b\\n# Bug: b may be zero'); w.add(v); w.set_default_size(700,450); w.show_all(); Gtk.main()"
@@ -54,6 +54,10 @@ def main():
      wire=requests[-1]['messages'];parts=[m['content'] for m in wire if isinstance(m.get('content'),list)]
      assert any(p.get('type')=='image_url' for arr in parts for p in arr),wire
      assert expected in json.dumps(wire)
+     if kind=='browser':
+      app=context['app_context']
+      assert any(document['uri']==page.as_uri() for document in app['documents']),app
+      assert any('three small moons' in selected['text'] for selected in app['selections']),app
      status=ctl('status');assert 'data:image/' not in json.dumps(status)
      if kind=='editor':assert any(s['kind']=='accessibility' for s in content['sources']),content
      print(f'PASS: {kind} visible text, image attachment, provenance, model request, compact state')

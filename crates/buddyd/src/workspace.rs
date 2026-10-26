@@ -2,6 +2,48 @@
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+/// A user's directory choice changes the boundary, never disables confinement.
+pub async fn validate_directory(configured: Option<&Path>, path: &Path) -> anyhow::Result<PathBuf> {
+    use anyhow::{bail, Context};
+    if !path.is_absolute() {
+        bail!("Choose an absolute directory path");
+    }
+    let root = tokio::fs::canonicalize(path)
+        .await
+        .context("Directory is unavailable")?;
+    if !root.is_dir() || !usable(&root) {
+        bail!(
+            "Choose a specific working directory, not home, filesystem root or a system directory"
+        );
+    }
+    if let Some(configured) = configured {
+        let boundary = tokio::fs::canonicalize(configured).await?;
+        if !root.starts_with(&boundary) {
+            bail!(
+                "Directory must be inside configured project_dir: {}",
+                boundary.display()
+            );
+        }
+    }
+    Ok(root)
+}
+
+pub async fn select_for_drop(
+    configured: Option<&Path>,
+    chosen: Option<&Path>,
+    fallback: PathBuf,
+    context: &mut Value,
+) -> anyhow::Result<PathBuf> {
+    if let Some(chosen) = chosen {
+        let root = validate_directory(configured, chosen).await?;
+        context["tool_workspace"] = json!({"root":root,"source":"selected","warning":null,
+            "note":"The user selected this directory for this Drop. All file tools remain confined here; anchor detection does not change it."});
+        Ok(root)
+    } else {
+        Ok(select(configured, fallback, context).await)
+    }
+}
+
 pub async fn select(configured: Option<&Path>, fallback: PathBuf, context: &mut Value) -> PathBuf {
     let detected = context
         .pointer("/working_context/root")
@@ -56,6 +98,38 @@ fn usable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn selected_directory_respects_configuration_and_symlinks() {
+        let base = std::env::temp_dir().join(format!("drops-directory-{}", uuid::Uuid::new_v4()));
+        let configured = base.join("project");
+        let selected = configured.join("subdir");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&selected).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let link = configured.join("escape");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let mut context = json!({"working_context":{"status":"detected","root":outside}});
+        assert_eq!(
+            select_for_drop(
+                Some(&configured),
+                Some(&selected),
+                base.join("private"),
+                &mut context
+            )
+            .await
+            .unwrap(),
+            selected
+        );
+        assert_eq!(context["tool_workspace"]["source"], "selected");
+        assert!(validate_directory(Some(&configured), &outside)
+            .await
+            .is_err());
+        assert!(validate_directory(Some(&configured), &link).await.is_err());
+        assert!(validate_directory(None, &base.join("missing"))
+            .await
+            .is_err());
+        std::fs::remove_dir_all(base).unwrap();
+    }
     #[tokio::test]
     async fn configuration_wins_and_ambiguity_keeps_private_root() {
         let fallback = PathBuf::from("/tmp/private-drop");

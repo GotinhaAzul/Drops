@@ -62,12 +62,36 @@ try:
             ctl("send",draft,"not placed",ok=False)
             ctl("drop","200","150","--id",draft)
             assert state()["blobs"][0]["appearance"]=="sprout"
+            initial=wait(lambda:state()["blobs"][0] if state()["blobs"][0]["context"] else None)
+            assert initial["directory"] is None,"Automatic must be the default"
+            assert initial["context"]["tool_workspace"]["source"]=="private"
+            assert not requests,"placement folder detection must not contact a model"
+            work=base/"working-files";work.mkdir()
+            ctl("directory",draft,"/",ok=False)
+            ctl("directory",draft,str(pathlib.Path.home()),ok=False)
+            ctl("directory",draft,"relative/path",ok=False)
+            ctl("directory",draft,str(base/"missing"),ok=False)
+            ctl("directory",draft,str(work))
+            assert state()["blobs"][0]["directory"]==str(work)
             ctl("send",draft,"write something")
             wait(lambda:state()["blobs"][0]["state"]=="waiting")
+            assert ctl("context",draft)["context"]["tool_workspace"]["source"]=="selected"
+            ctl("directory",draft,ok=False)
+            assert not (work/"note.txt").exists(),"write must still wait for approval"
+            ctl("confirm",draft)
+            wait(lambda:state()["blobs"][0]["state"]=="idle")
+            assert (work/"note.txt").read_text()=="approved by smoke test\n"
+            assert not (base/"data/projects"/draft/"note.txt").exists()
+            ctl("directory",draft)
+            assert state()["blobs"][0]["directory"] is None
+            ctl("send",draft,"write something")
+            wait(lambda:state()["blobs"][0]["state"]=="waiting")
+            assert ctl("context",draft)["context"]["tool_workspace"]["source"]=="private"
             ctl("remove",draft)
             assert state()["blobs"]==[]
             assert not (base/"data/sessions"/(draft+".jsonl")).exists()
             a=ctl("create","--appearance","cat")["id"]
+            ctl("directory",a,str(work))
             ctl("create","--appearance","sprout")
             ctl("create")
             ctl("create",ok=False)
@@ -79,7 +103,8 @@ try:
             assert not restored["panel_open"],"restart must not summon the panel"
             assert restored["connection"]["model"]=="mock"
             assert next(b for b in restored["blobs"] if b["id"]==a)["appearance"]=="cat"
-            print("PASS: no-config onboarding, hidden-until-clicked panel, create/style/place/delete, active-turn deletion, appearance persistence, endpoint validation/save, real mock-provider turn")
+            assert next(b for b in restored["blobs"] if b["id"]==a)["directory"]==str(work)
+            print("PASS: widget lifecycle, selected-directory writes with approval, busy/invalid directory rejection, automatic reset, directory/appearance persistence, mock-provider turn")
         except Exception:
             log.flush();log.seek(0);print(log.read());raise
         finally:

@@ -884,6 +884,8 @@ class LiveGtkTests(unittest.TestCase):
             self.assertIn("editor line one", text)
             self.assertIn("editor line two", text)
             self.assertIn("visible entry text", text)
+            self.assertTrue(any(selection["text"] == "editor line one"
+                                for selection in result["app_context"]["selections"]), result["app_context"])
             self.assertNotIn("drops-test-secret-9f3a", text)
             self.assertTrue(
                 any("password" in warning for warning in result["warnings"]),

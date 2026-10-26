@@ -45,6 +45,11 @@ enum Action {
     },
     /// List models available to the active Opencode Go connection.
     Models,
+    /// Choose this Drop's file directory, or omit PATH to restore detection.
+    Directory {
+        id: String,
+        path: Option<String>,
+    },
     Create {
         #[arg(long, default_value="drop",value_parser=["drop","cat","sprout","bunny","robot","cloud"])]
         appearance: String,
@@ -123,6 +128,7 @@ async fn main() -> Result<()> {
     let cmd = match args.command {
         Action::Status { .. } => Command::Status,
         Action::Watch => Command::Watch,
+        Action::Directory { id, path } => Command::Directory { id, path },
         Action::Toggle => Command::Toggle,
         Action::Sudo { mode } => Command::Sudo {
             enabled: mode == "on",

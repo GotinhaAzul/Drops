@@ -30,6 +30,8 @@ def build_window(app: Gtk.Application, title: str) -> None:
 
     view = Gtk.TextView()
     view.get_buffer().set_text(EDITOR_TEXT)
+    buffer = view.get_buffer()
+    buffer.select_range(buffer.get_start_iter(), buffer.get_iter_at_offset(len("editor line one")))
     box.append(view)
 
     entry = Gtk.Entry()

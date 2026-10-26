@@ -27,6 +27,7 @@ for line in sys.stdin:
   state["blobs"].append({{"id":"test","appearance":cmd["appearance"],"state":"idle","placement":{{"anchor":{{"kind":"panel"}},"x":10,"y":10,"visible":False,"label":"Ready to place"}},"history":[],"context":None,"approval":None}});publish();emit({{"type":"ok","id":"test"}})
  elif kind=="lively":state["lively"]=cmd["enabled"];publish()
  elif kind=="style":state["blobs"][0]["appearance"]=cmd["appearance"];publish()
+ elif kind=="directory":state["blobs"][0]["directory"]=cmd["path"];publish();emit({{"type":"ok"}})
  elif kind=="sudo":state["sudo"]=cmd["enabled"];publish()
  elif kind=="pointer":emit({{"type":"pointer","cursor":None}})
  elif kind=="preview":emit({{"type":"preview","geometry":None}})
@@ -68,7 +69,14 @@ for line in sys.stdin:
             case 14:if(root.currentDrop.appearance!=="cloud")return;lookSelector.activated(1);root.testPhase=15;break
             case 15:if(root.currentDrop.appearance!=="cat")return;livelyToggle.checked=true;livelyToggle.toggled();root.testPhase=10;break
             case 0:root.pendingLook="drop";newDropButton.clicked();root.testPhase++;break
-            case 1:if(!root.currentDrop)return;lookSelector.activated(1);root.testPhase++;break
+            case 1:if(!root.currentDrop)return;
+                directoryButton.clicked();
+                if(!directoryView.opened || root.directoryDropId!==root.currentDrop.id){console.log("TEST_FAILURE directory dialog did not open");Qt.quit();return}
+                directoryPath.text="/tmp/chosen-folder";useDirectoryButton.clicked();root.testPhase=16;break
+            case 16:if(root.currentDrop.directory!=="/tmp/chosen-folder")return;
+                if(root.directoryLabel(root.currentDrop)!=="/tmp/chosen-folder"){console.log("TEST_FAILURE selected directory label");Qt.quit();return}
+                directoryButton.clicked();automaticDirectoryButton.clicked();root.testPhase=17;break
+            case 17:if(root.currentDrop.directory!==null)return;lookSelector.activated(1);root.testPhase=2;break
             case 2:if(root.currentDrop.appearance!=="cat" || !root.testGhost)return;
                 root.dragLook="cat";root.cursorReady=true;root.skipMotion=true;root.cursor=({x:100,y:100});root.dragging=true;lookSelector.activated(3);root.testPhase=12;break
             case 3:root.skipMotion=false;root.cursor=({x:500,y:400});sample.start();root.testPhase++;break
@@ -95,6 +103,7 @@ for line in sys.stdin:
     assert any(c["type"]=="drop" and c["use_cursor"] for c in commands)
     assert any(c["type"]=="configure" and c["base_url"]=="http://127.0.0.1:1234/v1" and c["model"]=="demo" for c in commands)
     assert any(c["type"]=="remove" for c in commands)
+    assert [c["path"] for c in commands if c["type"]=="directory"]==["/tmp/chosen-folder",None]
     assert [c["enabled"] for c in commands if c["type"]=="lively"]==[True,False]
     assert [c["enabled"] for c in commands if c["type"]=="sudo"]==[True,False]
     for look in ["bunny","robot","cloud"]:

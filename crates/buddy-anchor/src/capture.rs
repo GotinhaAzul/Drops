@@ -66,6 +66,7 @@ const DEFAULT_IMAGE_EDGE: u32 = 1_280;
 const MAX_IMAGE_EDGE: u32 = 8_192;
 const MAX_TEXT_HELPER_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FULL_HELPER_BYTES: usize = 8 * 1024 * 1024;
+const MAX_APP_HELPER_BYTES: usize = 512 * 1024;
 const MAX_OCR_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCREENSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ENCODED_IMAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -239,6 +240,8 @@ pub async fn enrich(
     if kind != "window" {
         return Ok(());
     }
+    context["app_context"] =
+        json!({"status":if config.enabled && config.accessibility {"unavailable"}else{"disabled"}});
 
     let Some(target) = WindowTarget::from_context(context) else {
         set_content(
@@ -343,6 +346,10 @@ pub async fn enrich(
     };
     let text_capture = helper_future.await;
 
+    if config.accessibility {
+        context["app_context"] =
+            crate::app_context::resolve(&text_capture.app_context, context).await;
+    }
     let mut warnings = text_capture.warnings;
     if text_capture.cancelled {
         warnings.push(warning(
@@ -1028,6 +1035,7 @@ fn tesseract_program() -> String {
 
 #[derive(Default)]
 struct TextCapture {
+    app_context: Value,
     sources: Vec<TextSource>,
     warnings: Vec<String>,
     cancelled: bool,
@@ -1042,6 +1050,8 @@ struct TextSource {
 
 #[derive(Default, Deserialize)]
 struct RawHelper {
+    #[serde(default)]
+    app_context: Value,
     #[serde(default)]
     sources: Vec<RawSource>,
     #[serde(default)]
@@ -1084,6 +1094,58 @@ async fn capture_text(
         };
     }
     decode_text_helper(&output, config, limit)
+}
+
+/// Small, read-only location probe using the same embedded/system Python as
+/// accessibility capture. No screenshot, OCR, document body or tmux capture.
+pub(crate) async fn workspace_probe(mut context: Value) -> Result<Value, String> {
+    context["workspace_probe"] = json!(true);
+    let mut input = serde_json::to_vec(&context).map_err(|e| e.to_string())?;
+    input.push(b'\n');
+    let mut command = Command::new(python_program());
+    command.args(["-B", "-c", TEXT_HELPER_SOURCE]);
+    let output = run_bounded(
+        command,
+        Some(input),
+        48_000,
+        Duration::from_millis(1700),
+        &CancellationToken::new(),
+    )
+    .await;
+    if !output.success || output.timed_out || output.truncated {
+        return Err("Live window location is unavailable or its probe timed out".into());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+}
+
+/// Refresh explicit app selections and document identity without reading the
+/// whole document or taking a screenshot. Used when opening an idle Drop.
+pub async fn app_context(context: &Value, config: &CaptureConfig) -> Value {
+    if !config.enabled || !config.accessibility {
+        return json!({"status":"disabled","note":"Window accessibility capture is disabled"});
+    }
+    if context["screen_locked"] == true || context["visible"] == false {
+        return json!({"status":"unavailable","note":"Window is locked or hidden"});
+    }
+    let mut input = context.clone();
+    input["app_probe"] = json!(true);
+    let Ok(input) = serde_json::to_vec(&input) else {
+        return Value::Null;
+    };
+    let captured = capture_text(
+        &input,
+        config,
+        &CancellationToken::new(),
+        1,
+        Duration::from_millis(1700),
+        MAX_APP_HELPER_BYTES,
+    )
+    .await;
+    let mut result = crate::app_context::resolve(&captured.app_context, context).await;
+    if !captured.warnings.is_empty() {
+        result["warnings"] = json!(captured.warnings);
+    }
+    result
 }
 
 fn decode_text_helper(
@@ -1132,6 +1194,9 @@ fn decode_text_helper(
     };
 
     let mut capture = TextCapture::default();
+    if config.accessibility {
+        capture.app_context = raw.app_context.clone();
+    }
     if output.truncated {
         capture.warnings.push(warning(
             "text_helper_truncated",
