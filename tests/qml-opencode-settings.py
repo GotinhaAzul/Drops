@@ -52,7 +52,7 @@ for line in sys.stdin:
             if(++ticks>120){console.log("TEST_FAILURE timed out phase "+root.testPhase);Qt.quit();return}
             if(!root.connected)return
             switch(root.testPhase){
-            case 0:root.loadSettings();root.settingsOpen=true;connectionType.activated(1);root.testPhase++;break
+            case 0:root.loadSettings();root.settingsOpen=true;goModeButton.clicked();root.testPhase++;break
             case 1:if(root.connectionMode!=="opencode_go")return;
                 if(!opencodeKey.visible)return;
                 opencodeKey.text="go-secret";loadModelsButton.clicked();root.testPhase++;break
